@@ -6,12 +6,14 @@
   NSData* kDown;
   NSData* kLeft;
   NSData* kRight;
-  NSData* kEsc;
   NSData* kPageUp;
   NSData* kPageDown;
   NSData* kHome;
   NSData* kEnd;
+  NSData* kEsc;
   NSData* kTab;
+  NSData* kInsert;
+  NSData* kDelete;
   NSData* repeating;
 }
 @end

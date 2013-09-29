@@ -15,12 +15,14 @@
     kDown=[[NSData alloc] initWithBytesNoCopy:"\x1bOB" length:3 freeWhenDone:NO];
     kLeft=[[NSData alloc] initWithBytesNoCopy:"\x1bOD" length:3 freeWhenDone:NO];
     kRight=[[NSData alloc] initWithBytesNoCopy:"\x1bOC" length:3 freeWhenDone:NO];
-    kEsc=[[NSData alloc] initWithBytesNoCopy:"\x1b" length:1 freeWhenDone:NO];
     kPageUp=[[NSData alloc] initWithBytesNoCopy:"\x1b[5~" length:4 freeWhenDone:NO];
     kPageDown=[[NSData alloc] initWithBytesNoCopy:"\x1b[6~" length:4 freeWhenDone:NO];
     kHome=[[NSData alloc] initWithBytesNoCopy:"\x1bOH" length:3 freeWhenDone:NO];
     kEnd=[[NSData alloc] initWithBytesNoCopy:"\x1bOF" length:3 freeWhenDone:NO];
+    kEsc=[[NSData alloc] initWithBytesNoCopy:"\x1b" length:1 freeWhenDone:NO];
     kTab=[[NSData alloc] initWithBytesNoCopy:"\t" length:1 freeWhenDone:NO];
+    kInsert=[[NSData alloc] initWithBytesNoCopy:"\x1b[2~" length:4 freeWhenDone:NO];
+    kDelete=[[NSData alloc] initWithBytesNoCopy:"\x1b[3~" length:4 freeWhenDone:NO];
     NSNotificationCenter* center=[NSNotificationCenter defaultCenter];
     [center addObserver:self selector:@selector(keyboardDidShow:)
      name:UIKeyboardDidShowNotification object:nil];
@@ -51,12 +53,10 @@
   UIKeyboardImpl* keyboard=(UIKeyboardImpl*)view.inputDelegate;
   CGSize size=vt100.tableView.bounds.size;
   CGPoint origin=[gesture locationInView:view];
-  BOOL base=(origin.y>size.height-60),shift=keyboard.isShifted;
-  NSData* input=nil;
-  if(origin.x<60){input=base?kEsc:shift?kHome:kLeft;}
-  else if(origin.x>size.width-60){input=base?kTab:shift?kEnd:kRight;}
-  else if(base){input=shift?kPageDown:kDown;}
-  else if(origin.y<60){input=shift?kPageUp:kUp;}
+  BOOL right=(origin.x>size.width-60),shift=keyboard.isShifted;
+  NSData* input=(origin.y<60)?right?kDelete:(origin.x<60)?kInsert:shift?kPageUp:kUp:
+   (origin.y>size.height-60)?right?kTab:(origin.x<60)?kEsc:shift?kPageDown:kDown:
+   right?shift?kEnd:kRight:(origin.x<60)?shift?kHome:kLeft:nil;
   if(input){
     [vt100 putData:input];
     if(shift && !keyboard.isShiftLocked){[keyboard setShift:NO];}
@@ -131,12 +131,14 @@
   [kDown release];
   [kLeft release];
   [kRight release];
-  [kEsc release];
   [kPageUp release];
   [kPageDown release];
   [kHome release];
   [kEnd release];
+  [kEsc release];
   [kTab release];
+  [kInsert release];
+  [kDelete release];
   [super dealloc];
 }
 @end
