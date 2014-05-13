@@ -1,6 +1,6 @@
 @class VT100;
 
-@interface MTView : UIView <UITextInput, UIGestureRecognizerDelegate> {
+@interface MTView : UIView <UIKeyInput, UIGestureRecognizerDelegate> {
   NSData* kBackspace;
   BOOL controlKey;
 }

@@ -3,37 +3,9 @@
 
 @implementation MTView
 @synthesize receiver;
-@synthesize selectedTextRange;
-@synthesize markedTextStyle;
-@synthesize selectionAffinity;
-@synthesize inputDelegate;
--(UITextRange*)markedTextRange {return nil;}
--(UITextPosition*)beginningOfDocument {return nil;}
--(UITextPosition*)endOfDocument {return nil;}
--(id<UITextInputTokenizer>)tokenizer {return nil;}
--(UITextRange*)characterRangeAtPoint:(CGPoint)point {return nil;}
--(UITextPosition*)closestPositionToPoint:(CGPoint)point withinRange:(UITextRange*)range {return nil;}
--(UITextPosition*)closestPositionToPoint:(CGPoint)point {return nil;}
--(CGRect)caretRectForPosition:(UITextPosition*)position {return CGRectMake(0,0,0,0);}
--(CGRect)firstRectForRange:(UITextRange*)range {return CGRectMake(0,0,0,0);}
--(void)setBaseWritingDirection:(UITextWritingDirection)writingDirection forRange:(UITextRange*)range {}
--(UITextWritingDirection)baseWritingDirectionForPosition:(UITextPosition*)position inDirection:(UITextStorageDirection)direction {return UITextWritingDirectionNatural;}
--(UITextRange*)characterRangeByExtendingPosition:(UITextPosition*)position inDirection:(UITextLayoutDirection)direction {return nil;}
--(UITextPosition*)positionWithinRange:(UITextRange*)range farthestInDirection:(UITextLayoutDirection)direction {return nil;}
--(NSInteger)offsetFromPosition:(UITextPosition*)position toPosition:(UITextPosition*)toPosition {return 0;}
--(NSComparisonResult)comparePosition:(UITextPosition*)position toPosition:(UITextPosition*)other {return NSOrderedSame;}
--(UITextPosition*)positionFromPosition:(UITextPosition*)position inDirection:(UITextLayoutDirection)direction offset:(NSInteger)offset {return nil;}
--(UITextPosition*)positionFromPosition:(UITextPosition*)position offset:(NSInteger)offset {return nil;}
--(UITextRange*)textRangeFromPosition:(UITextPosition*)fromPosition toPosition:(UITextPosition*)toPosition {return nil;}
--(void)unmarkText {}
--(void)setMarkedText:(NSString*)markedText selectedRange:(NSRange)selectedRange {}
--(void)replaceRange:(UITextRange*)range withText:(NSString*)text {}
--(NSString*)textInRange:(UITextRange*)range {return nil;}
-
 -(UITextAutocapitalizationType)autocapitalizationType {return UITextAutocapitalizationTypeNone;}
 -(UITextAutocorrectionType)autocorrectionType {return UITextAutocorrectionTypeNo;}
 -(UIKeyboardType)keyboardType {return UIKeyboardTypeASCIICapable;}
-
 -(id)init {
   if((self=[super init])){
     kBackspace=[[NSData alloc] initWithBytesNoCopy:"\x7f" length:1 freeWhenDone:NO];
@@ -91,8 +63,6 @@
 }
 -(void)dealloc {
   [kBackspace release];
-  [selectedTextRange release];
-  [markedTextStyle release];
   [super dealloc];
 }
 @end

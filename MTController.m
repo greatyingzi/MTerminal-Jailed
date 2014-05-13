@@ -3,6 +3,7 @@
 #import "VT100.h"
 
 @interface UIKeyboardImpl
++(id)sharedInstance;
 -(BOOL)isShifted;
 -(BOOL)isShiftLocked;
 -(void)setShift:(BOOL)shift;
@@ -50,9 +51,9 @@
 }
 -(void)handleSpecialKeyGesture:(UIGestureRecognizer*)gesture {
   MTView* view=(MTView*)self.view;
-  UIKeyboardImpl* keyboard=(UIKeyboardImpl*)view.inputDelegate;
   CGSize size=vt100.tableView.bounds.size;
   CGPoint origin=[gesture locationInView:view];
+  UIKeyboardImpl* keyboard=[UIKeyboardImpl sharedInstance];
   BOOL right=(origin.x>size.width-60),shift=keyboard.isShifted;
   NSData* input=(origin.y<60)?right?kDelete:(origin.x<60)?kInsert:shift?kPageUp:kUp:
    (origin.y>size.height-60)?right?kTab:(origin.x<60)?kEsc:shift?kPageDown:kDown:
