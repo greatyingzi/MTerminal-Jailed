@@ -1,6 +1,6 @@
 #import "VT100.h"
 #import "MTPreferences.h"
-#import "VT100Cell.h"
+#import "VT100Row.h"
 #import "VT100Screen.h"
 #include <util.h>
 #include <sys/ioctl.h>
@@ -64,12 +64,11 @@
   return self;
 }
 -(void)refresh {
+  [screen resetDirty];
   [tableView reloadData];
-  [tableView setNeedsDisplay];  
   [tableView scrollToRowAtIndexPath:[NSIndexPath
    indexPathForRow:screen.numberOfLines-1 inSection:0]
    atScrollPosition:UITableViewScrollPositionBottom animated:NO];
-  [screen resetDirty];
 }
 -(void)dataAvailable:(NSNotification*)note {
   NSData* data=[note.userInfo objectForKey:NSFileHandleNotificationDataItem];
@@ -124,14 +123,18 @@
   NSAssert(ipath.section==0,@"Invalid section");
   NSUInteger rowIndex=ipath.row;
   NSAssert(rowIndex<screen.numberOfLines,@"Invalid rowIndex");
-  VT100Cell* cell=[tableView dequeueReusableCellWithIdentifier:@"VT100Cell"];
-  if(!cell){
-    cell=[[[VT100Cell alloc] initWithStyle:UITableViewCellStyleDefault
-     reuseIdentifier:@"VT100Cell"] autorelease];
-    cell.screen=screen;
+  UITableViewCell* cell=[tableView dequeueReusableCellWithIdentifier:@"VT100"];
+  VT100Row* rowView;
+  if(cell){rowView=(VT100Row*)cell.backgroundView;}
+  else {
+    cell=[[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+     reuseIdentifier:@"VT100"] autorelease];
+    rowView=[[VT100Row alloc] init];
+    rowView.screen=screen;
+    [cell.backgroundView=rowView release];
   }
-  cell.rowIndex=rowIndex;
-  [cell setNeedsDisplay];
+  rowView.rowIndex=rowIndex;
+  [rowView setNeedsDisplay];
   return cell;  
 }
 -(void)dealloc {

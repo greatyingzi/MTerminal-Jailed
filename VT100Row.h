@@ -1,6 +1,6 @@
 @class VT100Screen;
 
-@interface VT100Cell : UITableViewCell
+@interface VT100Row : UIView
 @property(nonatomic,assign) int rowIndex;
 @property(nonatomic,assign) VT100Screen* screen;
 @end

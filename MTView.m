@@ -5,6 +5,7 @@
 @synthesize receiver;
 -(UITextAutocapitalizationType)autocapitalizationType {return UITextAutocapitalizationTypeNone;}
 -(UITextAutocorrectionType)autocorrectionType {return UITextAutocorrectionTypeNo;}
+-(UIKeyboardAppearance)keyboardAppearance {return UIKeyboardAppearanceDark;}
 -(UIKeyboardType)keyboardType {return UIKeyboardTypeASCIICapable;}
 -(id)init {
   if((self=[super init])){

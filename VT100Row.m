@@ -1,13 +1,14 @@
-#import "VT100Cell.h"
+#import "VT100Row.h"
 #import "MTPreferences.h"
 #import "VT100Screen.h"
 
-@implementation VT100Cell
+@implementation VT100Row
 @synthesize rowIndex;
 @synthesize screen;
 
 -(void)drawRect:(CGRect)rect {
   CGContextRef context=UIGraphicsGetCurrentContext();
+  CGContextClearRect(context,rect);
   MTPreferences* prefs=[MTPreferences sharedInstance];
   CGSize glyphSize=prefs.glyphSize;
   screen_char_t* linebuf=[screen getLineAtIndex:rowIndex];
@@ -31,12 +32,12 @@
   // into a character of a different color.  It runs one extra time to set the
   // attribute for the run of characters at the end of the line.
   unsigned int spanbg=0,spanfg=0;
-  CGColorRef currentbg=nil,currentfg=nil;
+  CGColorRef currentbg=NULL,currentfg=NULL;
   for (i=0;i<=width;i++){
     BOOL cursor=(i==cursorX && rowIndex==cursorY);
     BOOL valid=(i<width && linebuf[i].ch);
     CGColorRef color=cursor?prefs.bgCursorColor:
-     valid?[prefs color:linebuf[i].bg_color]:nil;
+     valid?[prefs color:linebuf[i].bg_color]:NULL;
     if(CGColorEqualToColor(currentbg,color)){spanbg++;}
     else {
       if(currentbg){
@@ -48,7 +49,7 @@
       spanbg=1;
     }
     color=cursor?prefs.fgCursorColor:
-     valid?[prefs color:linebuf[i].fg_color]:nil;
+     valid?[prefs color:linebuf[i].fg_color]:NULL;
     if(CGColorEqualToColor(currentfg,color)){spanfg++;}
     else {
       if(currentfg){

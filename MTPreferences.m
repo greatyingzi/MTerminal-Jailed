@@ -71,7 +71,7 @@
     // font metrics
     ctFont=CTFontCreateWithName(CFSTR("Courier"),
      (UI_USER_INTERFACE_IDIOM()==UIUserInterfaceIdiomPad)?18:10,NULL);
-    NSAssert(ctFont!=nil,@"Error in CTFontCreateWithName");
+    NSAssert(ctFont,@"Error in CTFontCreateWithName");
     CFMutableAttributedStringRef string=CFAttributedStringCreateMutable(NULL,0);
     CFAttributedStringReplaceString(string,CFRangeMake(0,0),CFSTR("A"));
     CFAttributedStringSetAttribute(string,CFRangeMake(0,1),kCTFontAttributeName,ctFont);
