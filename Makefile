@@ -1,3 +1,5 @@
+ARCHS = armv7
+
 include theos/makefiles/common.mk
 
 APPLICATION_NAME = MTerminal

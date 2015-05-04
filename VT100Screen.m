@@ -76,7 +76,7 @@ static const unichar charmap[256]={
 };
 
 /* translates normal char into graphics char */
-void translate(screen_char_t *s, int len)
+static void translate(screen_char_t *s, int len)
 {
     int i;
     for (i = 0; i < len ; i++) {
@@ -85,7 +85,7 @@ void translate(screen_char_t *s, int len)
 }
 
 /* pad the source string whenever double width character appears */
-void padString(NSString *s, screen_char_t *buf, int fg, int bg, int *len,
+static void padString(NSString *s, screen_char_t *buf, int fg, int bg, int *len,
         NSStringEncoding encoding)
 {
     int l=*len;
