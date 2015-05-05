@@ -5,7 +5,7 @@
 @protocol VT100RowDelegate <NSObject>
 @property(nonatomic,readonly) CGColorRef bgColor,bgCursorColor,fgCursorColor;
 @property(nonatomic,readonly) CTFontRef font;
-@property(nonatomic,readonly) CGFloat glyphDescent;
+@property(nonatomic,readonly) CGFloat glyphAscent;
 @property(nonatomic,readonly) CGSize glyphSize;
 @property(nonatomic,readonly) VT100Screen* screen;
 -(CGColorRef)colorAtIndex:(unsigned int)index;

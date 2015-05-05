@@ -11,15 +11,13 @@
   [self setNeedsDisplay];
 }
 -(void)drawRect:(CGRect)rect {
-  CGContextRef context=UIGraphicsGetCurrentContext();
-  CGContextClearRect(context,rect);
-  CGSize glyphSize=delegate.glyphSize;
   VT100Screen* screen=delegate.screen;
   screen_char_t* linebuf=[screen getLineAtIndex:rowIndex];
   int width=screen.width,i;
   unichar* ucbuf=malloc(width*sizeof(unichar));
   for (i=0;i<width;i++){ucbuf[i]=linebuf[i].ch?:' ';}
   CFMutableAttributedStringRef attrString=CFAttributedStringCreateMutable(NULL,0);
+  CFAttributedStringBeginEditing(attrString);
   CFStringRef string=CFStringCreateWithCharactersNoCopy(NULL,ucbuf,width,NULL);
   CFAttributedStringReplaceString(attrString,CFRangeMake(0,0),string);
   CFRelease(string);
@@ -35,10 +33,12 @@
   // compares the the colors of characters and sets the attribute when it runs
   // into a character of a different color.  It runs one extra time to set the
   // attribute for the run of characters at the end of the line.
+  CGContextRef context=UIGraphicsGetCurrentContext();
   CGContextSetFillColorWithColor(context,delegate.bgColor);
   CGContextFillRect(context,rect);
   unsigned int spanbg=0,spanfg=0;
   CGColorRef currentbg=NULL,currentfg=NULL;
+  CGSize glyphSize=delegate.glyphSize;
   for (i=0;i<=width;i++){
     BOOL cursor=(i==cursorX && rowIndex==cursorY);
     BOOL valid=(i<width && linebuf[i].ch);
@@ -66,10 +66,11 @@
       spanfg=1;
     }
   }
+  CFAttributedStringEndEditing(attrString);
   // By default, text is drawn upside down.  Apply a transformation to turn
   // orient the text correctly.
   CGContextSetTextMatrix(context,CGAffineTransformMake(1,0,0,-1,0,0));
-  CGContextSetTextPosition(context,0,glyphSize.height-delegate.glyphDescent);
+  CGContextSetTextPosition(context,0,delegate.glyphAscent);
   CTLineRef line=CTLineCreateWithAttributedString(attrString);
   CFRelease(attrString);
   CTLineDraw(line,context);
