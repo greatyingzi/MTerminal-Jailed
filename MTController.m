@@ -281,7 +281,7 @@ static CGSize $_screenSize(UIScrollView* view) {
 -(void)handlePasteGesture:(UIGestureRecognizer*)gesture {
   UIPasteboard* pb=[UIPasteboard generalPasteboard];
   if([pb containsPasteboardTypes:UIPasteboardTypeListString]){
-    [self putData:[pb dataForPasteboardType:@"public.utf8-plain-text"]];
+    [self putData:[pb dataForPasteboardType:@"public.text"]];
   }
 }
 -(void)handleRepeatGesture:(UIGestureRecognizer*)gesture {
