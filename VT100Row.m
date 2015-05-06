@@ -65,24 +65,30 @@
   }
   [self setNeedsDisplay];
 }
--(void)drawRect:(CGRect)rect {
+-(void)drawRect:(CGRect)drawRect {
   if(!textLine){return;}
   CGContextRef context=UIGraphicsGetCurrentContext();
   // draw background
   CGContextSetFillColorWithColor(context,delegate.bgColor);
-  CGContextFillRect(context,rect);
+  CGContextFillRect(context,drawRect);
   CFIndex nbg=CFDictionaryGetCount(bgMap),i;
   CGColorRef* allcolors=malloc(nbg*sizeof(CGColorRef));
   CFArrayRef* allptrs=malloc(nbg*sizeof(CFArrayRef));
   CFDictionaryGetKeysAndValues(bgMap,(const void**)allcolors,(const void**)allptrs);
   CGFloat height=delegate.glyphHeight;
   for (i=0;i<nbg;i++){
-    CGContextSetFillColorWithColor(context,allcolors[i]);
-    unsigned int nptrs=CFArrayGetCount(allptrs[i]),j;
+    unsigned int nptrs=CFArrayGetCount(allptrs[i]),nrects=0,j;
+    CGRect* rects=malloc(nptrs*sizeof(CGRect));
     for (j=0;j<nptrs;j++){
       CGFloat* offset=(void*)CFArrayGetValueAtIndex(allptrs[i],j);
-      CGContextFillRect(context,CGRectMake(offset[0],0,offset[1]-offset[0],height));
+      CGRect rect=CGRectMake(offset[0],0,offset[1]-offset[0],height);
+      if(CGRectIntersectsRect(rect,drawRect)){rects[nrects++]=rect;}
     }
+    if(nrects){
+      CGContextSetFillColorWithColor(context,allcolors[i]);
+      CGContextFillRects(context,rects,nrects);
+    }
+    free(rects);
   }
   free(allcolors);
   free(allptrs);
