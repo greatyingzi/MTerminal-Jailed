@@ -11,9 +11,11 @@
 -(void)setShift:(BOOL)shift;
 @end
 
-static CGColorRef $_createRGBColor(CGColorSpaceRef rgbspace,NSString* str,unsigned int v) {
+static CGColorRef $_createRGBColor(CGColorSpaceRef rgbspace,CFMutableDictionaryRef unique,NSString* str,unsigned int v) {
   if(str){[[NSScanner scannerWithString:str] scanHexInt:&v];}
-  return CGColorCreate(rgbspace,(CGFloat[]){
+  const void* existing=CFDictionaryGetValue(unique,(void*)(v&0xffffff));
+  return existing?(CGColorRef)CFRetain(existing):
+   CGColorCreate(rgbspace,(CGFloat[]){
    ((v>>16)&0xff)/255.,((v>>8)&0xff)/255.,(v&0xff)/255.,1});
 }
 static CGPoint $_screenOrigin(UIScrollView* view,UIGestureRecognizer* gesture) {
@@ -33,8 +35,7 @@ static CGSize $_screenSize(UIScrollView* view) {
 
 @implementation MTController
 @synthesize bgColor,bgCursorColor,fgCursorColor;
-@synthesize font,glyphAscent,glyphSize;
-@synthesize screen;
+@synthesize font,glyphAscent,glyphHeight;
 -(id)init {
   if((self=[super init])){
     kUp=[[NSData alloc] initWithBytesNoCopy:"\x1bOA" length:3 freeWhenDone:NO];
@@ -53,61 +54,58 @@ static CGSize $_screenSize(UIScrollView* view) {
     NSUserDefaults* defaults=[NSUserDefaults standardUserDefaults];
     // create color palette
     CGColorSpaceRef rgbspace=CGColorSpaceCreateDeviceRGB();
+    CFMutableDictionaryRef unique=CFDictionaryCreateMutable(NULL,0,NULL,NULL);
+    const unsigned char cvalues[]={0,0x5f,0x87,0xaf,0xd7,1};
+    unsigned int i,z=16;
+    for (i=0;i<6;i++){
+      unsigned int rv=cvalues[i],j;
+      CGFloat r=rv/255.;rv<<=16;
+      for (j=0;j<6;j++){
+        unsigned int gv=cvalues[j],k;
+        CGFloat g=gv/255.;gv<<=8;
+        for (k=0;k<6;k++){
+          unsigned int bv=cvalues[k];
+          CFDictionaryAddValue(unique,(void*)(rv|gv|bv),
+           colorTable[z++]=CGColorCreate(rgbspace,(CGFloat[]){r,g,bv/255.,1}));
+        }
+      }
+    }
+    for (i=0;i<24;i++){
+      unsigned int cv=i*10+8;
+      CGFloat c=cv/255.;
+      CFDictionaryAddValue(unique,(void*)((cv<<16)|(cv<<8)|cv),
+       colorTable[z++]=CGColorCreate(rgbspace,(CGFloat[]){c,c,c,1}));
+    }
     const unsigned int xterm16[]={
      0x000000,0xcd0000,0x00cd00,0xcdcd00,0x0000ee,0xcd00cd,0x00cdcd,0xe5e5e5,
      0x7f7f7f,0xff0000,0x00ff00,0xffff00,0x5c5cff,0xff00ff,0x00ffff,0xffffff};
-    unsigned int i;
     NSArray* palette=[defaults stringArrayForKey:@"palette"];
     NSUInteger count=palette.count;
     for (i=0;i<16;i++){
-      colorTable[i]=$_createRGBColor(rgbspace,
+      colorTable[i]=$_createRGBColor(rgbspace,unique,
        (i<count)?[palette objectAtIndex:i]:nil,xterm16[i]);
     }
-    const CGFloat ccValues[]={0,0x5f/255.,0x87/255.,0xaf/255.,0xd7/255.,1};
-    for (i=0;i<216;i++){
-      colorTable[i+16]=CGColorCreate(rgbspace,
-       (CGFloat[]){ccValues[(i/36)%6],ccValues[(i/6)%6],ccValues[i%6],1});
-    }
-    for (i=0;i<24;i++){
-      CGFloat cv=(i*10+8)/255.;
-      colorTable[i+232]=CGColorCreate(rgbspace,(CGFloat[]){cv,cv,cv,1});
-    }
-    bgColor=$_createRGBColor(rgbspace,[defaults stringForKey:@"bgColor"],0x000000);
-    bgCursorColor=$_createRGBColor(rgbspace,[defaults stringForKey:@"bgCursorColor"],0x5f5f5f);
-    fgCursorColor=$_createRGBColor(rgbspace,[defaults stringForKey:@"fgCursorColor"],0xe5e5e5);
-    fgColor=$_createRGBColor(rgbspace,[defaults stringForKey:@"fgColor"],0xd7d7d7);
-    fgBoldColor=$_createRGBColor(rgbspace,[defaults stringForKey:@"fgBoldColor"],0xffffff);
+    bgColor=$_createRGBColor(rgbspace,unique,
+     [defaults stringForKey:@"bgColor"],0x000000);
+    bgCursorColor=$_createRGBColor(rgbspace,unique,
+     [defaults stringForKey:@"bgCursorColor"],0x5f5f5f);
+    fgCursorColor=$_createRGBColor(rgbspace,unique,
+     [defaults stringForKey:@"fgCursorColor"],0xe5e5e5);
+    fgColor=$_createRGBColor(rgbspace,unique,
+     [defaults stringForKey:@"fgColor"],0xd7d7d7);
+    fgBoldColor=$_createRGBColor(rgbspace,unique,
+     [defaults stringForKey:@"fgBoldColor"],0xffffff);
     CFRelease(rgbspace);
-    // create monospaced font
-    CTFontRef reffont=CTFontCreateWithName((CFStringRef)[defaults stringForKey:@"fontName"]?:
+    CFRelease(unique);
+    // get font metrics
+    font=CTFontCreateWithName((CFStringRef)[defaults stringForKey:@"fontName"]?:
      CFSTR("Courier"),[defaults floatForKey:@"fontSize"]?:10,NULL);
-    CGGlyph glyph;
-    CTFontGetGlyphsForCharacters(reffont,(const unichar[]){'A'},&glyph,1);
-    glyphSize.width=CTFontGetAdvancesForGlyphs(reffont,kCTFontDefaultOrientation,&glyph,NULL,1);
-    CFNumberRef advance=CFNumberCreate(NULL,kCFNumberCGFloatType,&glyphSize.width);
-    // disable common ligatures
-    CFNumberRef ligkey=CFNumberCreate(NULL,kCFNumberIntType,(const int[]){1});
-    CFNumberRef ligval=CFNumberCreate(NULL,kCFNumberIntType,(const int[]){3});
-    CFDictionaryRef ligsetting=CFDictionaryCreate(NULL,
-     (const void*[]){kCTFontFeatureTypeIdentifierKey,kCTFontFeatureSelectorIdentifierKey},
-     (const void*[]){ligkey,ligval},2,NULL,&kCFTypeDictionaryValueCallBacks);
-    CFRelease(ligkey);
-    CFRelease(ligval);
-    CFArrayRef fsettings=CFArrayCreate(NULL,
-     (const void**)&ligsetting,1,&kCFTypeArrayCallBacks);
-    CFRelease(ligsetting);
-    CFDictionaryRef monoattr=CFDictionaryCreate(NULL,
-     (const void*[]){kCTFontFixedAdvanceAttribute,kCTFontFeatureSettingsAttribute},
-     (const void*[]){advance,fsettings},2,NULL,&kCFTypeDictionaryValueCallBacks);
-    CFRelease(advance);
-    CFRelease(fsettings);
-    CTFontDescriptorRef monodesc=CTFontDescriptorCreateWithAttributes(monoattr);
-    CFRelease(monoattr);
-    font=CTFontCreateCopyWithAttributes(reffont,0,NULL,monodesc);
-    CFRelease(reffont);
-    CFRelease(monodesc);
     glyphAscent=CTFontGetAscent(font);
-    glyphSize.height=glyphAscent+CTFontGetDescent(font)+CTFontGetLeading(font);
+    glyphHeight=glyphAscent+CTFontGetDescent(font);
+    CGGlyph glyph;
+    CTFontGetGlyphsForCharacters(font,(const unichar[]){'$'},&glyph,1);
+    colWidth=CTFontGetAdvancesForGlyphs(font,kCTFontDefaultOrientation,&glyph,NULL,1);
+    rowHeight=glyphHeight+CTFontGetLeading(font);
     // set up VT100
     screen=[[VT100Screen alloc] init];
     terminal=[[VT100Terminal alloc] init];
@@ -125,8 +123,8 @@ static CGSize $_screenSize(UIScrollView* view) {
 }
 -(void)updateScreenSize {
   CGSize screenSize=$_screenSize(self.tableView);
-  int width=screenSize.width/glyphSize.width;
-  int height=screenSize.height/glyphSize.height;
+  int width=screenSize.width/colWidth;
+  int height=screenSize.height/rowHeight;
   if(width<1 || height<1){return;}
   [screen resizeWidth:width height:height];
   if(ptyHandle){
@@ -253,14 +251,17 @@ static CGSize $_screenSize(UIScrollView* view) {
   return screen.numberOfLines;
 }
 -(UITableViewCell*)tableView:(UITableView*)tableView cellForRowAtIndexPath:(NSIndexPath*)ipath {
-  NSUInteger rowIndex=ipath.row;
   UITableViewCell* cell=[tableView dequeueReusableCellWithIdentifier:@"Cell"];
   if(!cell){
     cell=[[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
      reuseIdentifier:@"Cell"] autorelease];
     [cell.backgroundView=[[VT100Row alloc] initWithDelegate:self] release];
   }
-  [(VT100Row*)cell.backgroundView setRowIndex:rowIndex];
+  int offsetY=screen.numberOfLines-screen.height;
+  NSUInteger index=ipath.row;
+  [(VT100Row*)cell.backgroundView
+   setBuffer:[screen getLineAtIndex:index] length:screen.width
+   cursorX:(index==screen.cursorY+(offsetY>0?offsetY:0))?screen.cursorX:-1];
   return cell;
 }
 -(void)handleZoneGesture:(UIGestureRecognizer*)gesture {
@@ -326,7 +327,7 @@ static CGSize $_screenSize(UIScrollView* view) {
   tableView.backgroundColor=[UIColor colorWithCGColor:bgColor];
   tableView.allowsSelection=NO;
   tableView.separatorStyle=UITableViewCellSeparatorStyleNone;
-  tableView.rowHeight=glyphSize.height;
+  tableView.rowHeight=rowHeight;
   UITapGestureRecognizer* zoneGesture=[[UITapGestureRecognizer alloc]
    initWithTarget:self action:@selector(handleZoneGesture:)];
   [tableView addGestureRecognizer:zoneGesture];

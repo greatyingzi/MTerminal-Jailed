@@ -22,5 +22,6 @@
   NSFileHandle* ptyHandle;
   pid_t ptypid;
   BOOL ctrlDown;
+  CGFloat colWidth,rowHeight;
 }
 @end
