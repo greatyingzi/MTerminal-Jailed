@@ -1,108 +1,143 @@
-#import "VT100Row.h"
+#include "VT100Row.h"
+#include "vttext.h"
+#include <libkern/OSAtomic.h>
+
+typedef struct hspan_t {
+  volatile int32_t retain_count;
+  CGFloat x,width;
+} hspan_t;
+
+static hspan_t* hspan_retain(CFAllocatorRef allocator,hspan_t* span) {
+  OSAtomicIncrement32Barrier(&span->retain_count);
+  return span;
+}
+static void hspan_release(CFAllocatorRef allocator,hspan_t* span) {
+  if(OSAtomicDecrement32Barrier(&span->retain_count)==0){free(span);}
+}
+static void $_appendSpan(CFMutableDictionaryRef map,CFTypeRef key,CGFloat x,CGFloat width) {
+  CFMutableArrayRef spans=(CFMutableArrayRef)CFDictionaryGetValue(map,key);
+  if(!spans){
+    spans=CFArrayCreateMutable(NULL,0,&(CFArrayCallBacks){
+     .retain=(CFArrayRetainCallBack)hspan_retain,
+     .release=(CFArrayReleaseCallBack)hspan_release});
+    CFDictionaryAddValue(map,key,spans);
+    CFRelease(spans);
+  }
+  hspan_t* span=malloc(sizeof(hspan_t));
+  span->retain_count=0;// CFArray will retain it
+  span->x=x;
+  span->width=width;
+  CFArrayAppendValue(spans,span);
+}
 
 @implementation VT100Row
--(id)initWithDelegate:(id<VT100RowDelegate>)_delegate {
+-(id)initWithBackgroundColor:(CGColorRef)_bgColor ascent:(CGFloat)_glyphAscent height:(CGFloat)_glyphHeight midY:(CGFloat)_glyphMidY {
   if((self=[super init])){
-    delegate=_delegate;
+    bgColor=CGColorRetain(_bgColor);
+    glyphAscent=_glyphAscent;
+    glyphHeight=_glyphHeight;
+    glyphMidY=_glyphMidY;
     bgMap=CFDictionaryCreateMutable(NULL,0,
-     NULL,&kCFTypeDictionaryValueCallBacks);
+     &kCFTypeDictionaryKeyCallBacks,
+     &kCFTypeDictionaryValueCallBacks);
+    stMap=CFDictionaryCreateMutable(NULL,0,
+     &kCFTypeDictionaryKeyCallBacks,
+     &kCFTypeDictionaryValueCallBacks);
   }
   return self;
 }
--(void)setBuffer:(screen_char_t*)buffer length:(int)length cursorX:(int)cursorX {
-  if(textLine){
-    CFRelease(textLine);
-    free(offsets);
+-(void)renderString:(CFAttributedStringRef)string {
+  if(ctLine){
+    CFRelease(ctLine);
+    CFDictionaryRemoveAllValues(bgMap);
+    CFDictionaryRemoveAllValues(stMap);
   }
-  int i;
-  unichar* ucbuf=malloc(length*sizeof(unichar));
-  for (i=0;i<length;i++){ucbuf[i]=buffer[i].ch?:' ';}
-  CFMutableAttributedStringRef attrString=CFAttributedStringCreateMutable(NULL,length);
-  CFAttributedStringBeginEditing(attrString);
-  CFStringRef string=CFStringCreateWithCharactersNoCopy(NULL,ucbuf,length,NULL);
-  CFAttributedStringReplaceString(attrString,CFRangeMake(0,0),string);
-  CFRelease(string);
-  CFAttributedStringSetAttribute(attrString,
-  CFRangeMake(0,length),kCTFontAttributeName,delegate.font);
-  // set foreground colors
-  NSUInteger fgspan=0;
-  CGColorRef fgcolor=NULL;
-  for (i=0;i<=length;i++){
-    CGColorRef fg0=(i==cursorX)?delegate.fgCursorColor:
-     (i<length && buffer[i].ch)?[delegate colorAtIndex:buffer[i].fg_color]:NULL;
-    if(fgcolor==fg0){fgspan++;}
-    else {
-      if(fgcolor){
-        CFAttributedStringSetAttribute(attrString,CFRangeMake(i-fgspan,fgspan),
-         kCTForegroundColorAttributeName,fgcolor);
-      }
-      fgspan=1;
-      fgcolor=fg0;
-    }
-  }
-  CFAttributedStringEndEditing(attrString);
-  textLine=CTLineCreateWithAttributedString(attrString);
-  CFRelease(attrString);
-  // get background offsets
-  CFDictionaryRemoveAllValues(bgMap);
-  CGFloat* ptr=offsets=malloc((length+1)*sizeof(CGFloat));
-  CGColorRef bgcolor=NULL;
-  for (i=0;i<=length;i++){
-    CGColorRef bg0=(i==cursorX)?delegate.bgCursorColor:
-     (i<length && buffer[i].ch)?[delegate colorAtIndex:buffer[i].bg_color]:NULL;
-    if(bgcolor==bg0){continue;}
-    if(bgcolor){
-      CFMutableArrayRef ptrs=(void*)CFDictionaryGetValue(bgMap,bgcolor);
-      if(!ptrs){
-        ptrs=CFArrayCreateMutable(NULL,length,NULL);
-        CFDictionarySetValue(bgMap,bgcolor,ptrs);
-        CFRelease(ptrs);
-      }
-      CFArrayAppendValue(ptrs,ptr-1);
-    }
-    *(ptr++)=CTLineGetOffsetForStringIndex(textLine,i,NULL);
-    bgcolor=bg0;
+  ctLine=CTLineCreateWithAttributedString(string);
+  CFArrayRef runs=CTLineGetGlyphRuns(ctLine);
+  CFIndex nruns=CFArrayGetCount(runs),i;
+  CGFloat x=0;
+  for (i=0;i<nruns;i++){
+    CTRunRef run=CFArrayGetValueAtIndex(runs,i);
+    CGFloat width=CTRunGetTypographicBounds(run,
+     CFRangeMake(0,0),NULL,NULL,NULL);
+    CFDictionaryRef attr=CTRunGetAttributes(run);
+    CGColorRef bgcolor=(CGColorRef)CFDictionaryGetValue(
+     attr,kVTBackgroundColorAttributeName);
+    if(bgcolor){$_appendSpan(bgMap,bgcolor,x,width);}
+    CGColorRef stcolor=(CGColorRef)CFDictionaryGetValue(
+     attr,kVTStrikethroughColorAttributeName);
+    if(stcolor){$_appendSpan(stMap,stcolor,x,width);}
+    x+=width;
   }
   [self setNeedsDisplay];
 }
 -(void)drawRect:(CGRect)drawRect {
-  if(!textLine){return;}
   CGContextRef context=UIGraphicsGetCurrentContext();
-  // draw background
-  CGContextSetFillColorWithColor(context,delegate.bgColor);
+  CGContextSetFillColorWithColor(context,bgColor);
   CGContextFillRect(context,drawRect);
-  CFIndex nbg=CFDictionaryGetCount(bgMap),i;
-  CGColorRef* allcolors=malloc(nbg*sizeof(CGColorRef));
-  CFArrayRef* allptrs=malloc(nbg*sizeof(CFArrayRef));
-  CFDictionaryGetKeysAndValues(bgMap,(const void**)allcolors,(const void**)allptrs);
-  CGFloat height=delegate.glyphHeight;
-  for (i=0;i<nbg;i++){
-    unsigned int nptrs=CFArrayGetCount(allptrs[i]),nrects=0,j;
-    CGRect* rects=malloc(nptrs*sizeof(CGRect));
-    for (j=0;j<nptrs;j++){
-      CGFloat* offset=(void*)CFArrayGetValueAtIndex(allptrs[i],j);
-      CGRect rect=CGRectMake(offset[0],0,offset[1]-offset[0],height);
-      if(CGRectIntersectsRect(rect,drawRect)){rects[nrects++]=rect;}
+  // draw background rectangles if necessary
+  CFIndex nbg=CFDictionaryGetCount(bgMap);
+  if(nbg){
+    const void** keys=malloc(nbg*sizeof(CGColorRef));
+    const void** values=malloc(nbg*sizeof(CFArrayRef));
+    CFDictionaryGetKeysAndValues(bgMap,keys,values);
+    CFIndex i;
+    for (i=0;i<nbg;i++){
+      CFIndex nvalues=CFArrayGetCount(values[i]),nrects=0,j;
+      CGRect* rects=malloc(nvalues*sizeof(CGRect));
+      for (j=0;j<nvalues;j++){
+        hspan_t* span=(hspan_t*)CFArrayGetValueAtIndex(values[i],j);
+        CGRect rect=CGRectMake(span->x,0,span->width,glyphHeight);
+        if(CGRectIntersectsRect(rect,drawRect)){rects[nrects++]=rect;}
+      }
+      if(nrects){
+        CGContextSetFillColorWithColor(context,(CGColorRef)keys[i]);
+        CGContextFillRects(context,rects,nrects);
+      }
+      free(rects);
     }
-    if(nrects){
-      CGContextSetFillColorWithColor(context,allcolors[i]);
-      CGContextFillRects(context,rects,nrects);
-    }
-    free(rects);
+    free(keys);
+    free(values);
   }
-  free(allcolors);
-  free(allptrs);
   // draw correctly oriented text
   CGContextSetTextMatrix(context,CGAffineTransformMake(1,0,0,-1,0,0));
-  CGContextSetTextPosition(context,0,delegate.glyphAscent);
-  CTLineDraw(textLine,context);
+  CGContextSetTextPosition(context,0,glyphAscent);
+  CTLineDraw(ctLine,context);
+  // draw strikethrough lines if necessary
+  CFIndex nst=CFDictionaryGetCount(stMap);
+  if(nst && glyphMidY>=CGRectGetMinY(drawRect)
+   && glyphMidY<=CGRectGetMaxY(drawRect)){
+    const void** keys=malloc(nst*sizeof(CGColorRef));
+    const void** values=malloc(nst*sizeof(CFArrayRef));
+    CFDictionaryGetKeysAndValues(stMap,keys,values);
+    CGFloat xmin=CGRectGetMinX(drawRect),xmax=CGRectGetMaxX(drawRect);
+    CFIndex i;
+    for (i=0;i<nst;i++){
+      CFIndex nvalues=CFArrayGetCount(values[i]),j;
+      BOOL first=YES;
+      for (j=0;j<nvalues;j++){
+        hspan_t* span=(hspan_t*)CFArrayGetValueAtIndex(values[i],j);
+        CGFloat xstart=span->x,xend=xstart+span->width;
+        if((xstart>=xmin || xend>=xmin) && (xstart<=xmax || xend<=xmax)){
+          if(first){
+            CGContextSetStrokeColorWithColor(context,(CGColorRef)keys[i]);
+            first=NO;
+          }
+          CGContextMoveToPoint(context,xstart,glyphMidY);
+          CGContextAddLineToPoint(context,xend,glyphMidY);
+          CGContextStrokePath(context);
+        }
+      }
+    }
+    free(keys);
+    free(values);
+  }
 }
 -(void)dealloc {
+  CGColorRelease(bgColor);
+  if(ctLine){CFRelease(ctLine);}
   CFRelease(bgMap);
-  if(textLine){
-    CFRelease(textLine);
-    free(offsets);
-  }
+  CFRelease(stMap);
   [super dealloc];
 }
 @end

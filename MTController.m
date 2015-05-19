@@ -1,6 +1,7 @@
-#import "MTController.h"
-#import "VT100Row.h"
-#import "VT100Screen.h"
+#include "MTController.h"
+#include "VT100.h"
+#include "VT100Row.h"
+#include "vttext.h"
 #include <sys/ioctl.h>
 #include <util.h>
 
@@ -34,25 +35,23 @@ static CGSize $_screenSize(UIScrollView* view) {
 }
 
 @implementation MTController
-@synthesize bgColor,bgCursorColor,fgCursorColor;
-@synthesize font,glyphAscent,glyphHeight;
 -(id)init {
   if((self=[super init])){
-    kUp=[[NSData alloc] initWithBytesNoCopy:"\x1bOA" length:3 freeWhenDone:NO];
-    kDown=[[NSData alloc] initWithBytesNoCopy:"\x1bOB" length:3 freeWhenDone:NO];
-    kLeft=[[NSData alloc] initWithBytesNoCopy:"\x1bOD" length:3 freeWhenDone:NO];
-    kRight=[[NSData alloc] initWithBytesNoCopy:"\x1bOC" length:3 freeWhenDone:NO];
-    kPageUp=[[NSData alloc] initWithBytesNoCopy:"\x1b[5~" length:4 freeWhenDone:NO];
-    kPageDown=[[NSData alloc] initWithBytesNoCopy:"\x1b[6~" length:4 freeWhenDone:NO];
-    kHome=[[NSData alloc] initWithBytesNoCopy:"\x1bOH" length:3 freeWhenDone:NO];
-    kEnd=[[NSData alloc] initWithBytesNoCopy:"\x1bOF" length:3 freeWhenDone:NO];
-    kEscape=[[NSData alloc] initWithBytesNoCopy:"\x1b" length:1 freeWhenDone:NO];
+    kUp=[[NSData alloc] initWithBytesNoCopy:"\033OA" length:3 freeWhenDone:NO];
+    kDown=[[NSData alloc] initWithBytesNoCopy:"\033OB" length:3 freeWhenDone:NO];
+    kLeft=[[NSData alloc] initWithBytesNoCopy:"\033OD" length:3 freeWhenDone:NO];
+    kRight=[[NSData alloc] initWithBytesNoCopy:"\033OC" length:3 freeWhenDone:NO];
+    kPageUp=[[NSData alloc] initWithBytesNoCopy:"\033[5~" length:4 freeWhenDone:NO];
+    kPageDown=[[NSData alloc] initWithBytesNoCopy:"\033[6~" length:4 freeWhenDone:NO];
+    kHome=[[NSData alloc] initWithBytesNoCopy:"\033OH" length:3 freeWhenDone:NO];
+    kEnd=[[NSData alloc] initWithBytesNoCopy:"\033OF" length:3 freeWhenDone:NO];
+    kEscape=[[NSData alloc] initWithBytesNoCopy:"\033" length:1 freeWhenDone:NO];
     kTab=[[NSData alloc] initWithBytesNoCopy:"\t" length:1 freeWhenDone:NO];
-    kInsert=[[NSData alloc] initWithBytesNoCopy:"\x1b[2~" length:4 freeWhenDone:NO];
-    kDelete=[[NSData alloc] initWithBytesNoCopy:"\x1b[3~" length:4 freeWhenDone:NO];
-    kBackspace=[[NSData alloc] initWithBytesNoCopy:"\x7f" length:1 freeWhenDone:NO];
-    NSUserDefaults* defaults=[NSUserDefaults standardUserDefaults];
+    kInsert=[[NSData alloc] initWithBytesNoCopy:"\033[2~" length:4 freeWhenDone:NO];
+    kDelete=[[NSData alloc] initWithBytesNoCopy:"\033[3~" length:4 freeWhenDone:NO];
+    kBackspace=[[NSData alloc] initWithBytesNoCopy:"\177" length:1 freeWhenDone:NO];
     // create color palette
+    NSUserDefaults* defaults=[NSUserDefaults standardUserDefaults];
     CGColorSpaceRef rgbspace=CGColorSpaceCreateDeviceRGB();
     CFMutableDictionaryRef unique=CFDictionaryCreateMutable(NULL,0,NULL,NULL);
     const unsigned char cvalues[]={0,0x5f,0x87,0xaf,0xd7,1};
@@ -76,6 +75,7 @@ static CGSize $_screenSize(UIScrollView* view) {
       CFDictionaryAddValue(unique,(void*)((cv<<16)|(cv<<8)|cv),
        colorTable[z++]=CGColorCreate(rgbspace,(CGFloat[]){c,c,c,1}));
     }
+    nullColor=CGColorCreate(rgbspace,(CGFloat[]){0,0,0,0});
     const unsigned int xterm16[]={
      0x000000,0xcd0000,0x00cd00,0xcdcd00,0x0000ee,0xcd00cd,0x00cdcd,0xe5e5e5,
      0x7f7f7f,0xff0000,0x00ff00,0xffff00,0x5c5cff,0xff00ff,0x00ffff,0xffffff};
@@ -85,34 +85,49 @@ static CGSize $_screenSize(UIScrollView* view) {
       colorTable[i]=$_createRGBColor(rgbspace,unique,
        (i<count)?[palette objectAtIndex:i]:nil,xterm16[i]);
     }
-    bgColor=$_createRGBColor(rgbspace,unique,
+    bgDefault=$_createRGBColor(rgbspace,unique,
      [defaults stringForKey:@"bgColor"],0x000000);
-    bgCursorColor=$_createRGBColor(rgbspace,unique,
+    bgCursor=$_createRGBColor(rgbspace,unique,
      [defaults stringForKey:@"bgCursorColor"],0x5f5f5f);
-    fgCursorColor=$_createRGBColor(rgbspace,unique,
-     [defaults stringForKey:@"fgCursorColor"],0xe5e5e5);
-    fgColor=$_createRGBColor(rgbspace,unique,
+    fgDefault=$_createRGBColor(rgbspace,unique,
      [defaults stringForKey:@"fgColor"],0xd7d7d7);
-    fgBoldColor=$_createRGBColor(rgbspace,unique,
+    fgBold=$_createRGBColor(rgbspace,unique,
      [defaults stringForKey:@"fgBoldColor"],0xffffff);
+    fgCursor=$_createRGBColor(rgbspace,unique,
+     [defaults stringForKey:@"fgCursorColor"],0xe5e5e5);
     CFRelease(rgbspace);
     CFRelease(unique);
-    // get font metrics
-    font=CTFontCreateWithName((CFStringRef)[defaults stringForKey:@"fontName"]?:
+    // set up fonts
+    ctFont=CTFontCreateWithName((CFStringRef)[defaults stringForKey:@"fontName"]?:
      CFSTR("Courier"),[defaults floatForKey:@"fontSize"]?:10,NULL);
-    glyphAscent=CTFontGetAscent(font);
-    glyphHeight=glyphAscent+CTFontGetDescent(font);
+    CTFontSymbolicTraits traits=CTFontGetSymbolicTraits(ctFont)
+     ^kCTFontBoldTrait^kCTFontItalicTrait;
+    ctFontBold=CTFontCreateCopyWithSymbolicTraits(ctFont,0,NULL,
+     traits,kCTFontBoldTrait)?:CFRetain(ctFont);
+    ctFontItalic=CTFontCreateCopyWithSymbolicTraits(ctFont,0,NULL,
+     traits,kCTFontItalicTrait)?:CFRetain(ctFont);
+    ctFontBoldItalic=CTFontCreateCopyWithSymbolicTraits(ctFont,0,NULL,
+     traits,kCTFontBoldTrait^kCTFontItalicTrait)?:CFRetain(ctFont);
+    int ul1=kCTUnderlineStyleSingle,ul2=kCTUnderlineStyleDouble;
+    ctUnderlineStyleSingle=CFNumberCreate(NULL,kCFNumberIntType,&ul1);
+    ctUnderlineStyleDouble=CFNumberCreate(NULL,kCFNumberIntType,&ul2);
+    glyphAscent=CTFontGetAscent(ctFont);
+    glyphHeight=glyphAscent+CTFontGetDescent(ctFont);
+    glyphMidY=glyphAscent-CTFontGetXHeight(ctFont)/2;
     CGGlyph glyph;
-    CTFontGetGlyphsForCharacters(font,(const unichar[]){'$'},&glyph,1);
-    colWidth=CTFontGetAdvancesForGlyphs(font,kCTFontDefaultOrientation,&glyph,NULL,1);
-    rowHeight=glyphHeight+CTFontGetLeading(font);
-    // set up VT100
-    screen=[[VT100Screen alloc] init];
-    terminal=[[VT100Terminal alloc] init];
-    terminal.screen=screen;
-    terminal.encoding=NSUTF8StringEncoding;
-    screen.terminal=terminal;
-    screen.refreshDelegate=self;
+    CTFontGetGlyphsForCharacters(ctFont,(const unichar[]){'$'},&glyph,1);
+    colWidth=CTFontGetAdvancesForGlyphs(ctFont,kCTFontDefaultOrientation,&glyph,NULL,1);
+    NSNumber* leading=[defaults objectForKey:@"fontLeading"];
+    rowHeight=glyphHeight+(leading?leading.floatValue:CTFontGetLeading(ctFont));
+    // get bell sound
+    CFBundleRef bundle=CFBundleGetMainBundle();
+    CFURLRef soundURL=CFBundleCopyResourceURL(bundle,CFSTR("bell"),CFSTR("caf"),NULL);
+    if(soundURL){
+      bellSound=AudioServicesCreateSystemSoundID(soundURL,
+       &bellSoundID)==kAudioServicesNoError;
+      CFRelease(soundURL);
+    }
+    // observe keyboard show/hide events
     NSNotificationCenter* center=[NSNotificationCenter defaultCenter];
     [center addObserver:self selector:@selector(startSubProcess)
      name:UIKeyboardDidShowNotification object:nil];
@@ -123,15 +138,15 @@ static CGSize $_screenSize(UIScrollView* view) {
 }
 -(void)updateScreenSize {
   CGSize screenSize=$_screenSize(self.tableView);
-  int width=screenSize.width/colWidth;
-  int height=screenSize.height/rowHeight;
+  CFIndex width=screenSize.width/colWidth;
+  CFIndex height=screenSize.height/rowHeight;
   if(width<1 || height<1){return;}
-  [screen resizeWidth:width height:height];
-  if(ptyHandle){
-    struct winsize window_size={.ws_col=width,.ws_row=height};
-    if(ioctl(ptyHandle.fileDescriptor,TIOCSWINSZ,&window_size)==-1){
-      [NSException raise:@"ioctl(TIOCSWINSZ)" format:@"%d: %s",errno,strerror(errno)];
-    }
+  if(vt100){[vt100 setWidth:width height:height];}
+  else {vt100=[[VT100 alloc] initWithWidth:width height:height];}
+  if(ptyHandle && ioctl(ptyHandle.fileDescriptor,TIOCSWINSZ,
+   &(struct winsize){.ws_col=width,.ws_row=height})==-1){
+    [NSException raise:@"ioctl(TIOCSWINSZ)"
+     format:@"%d: %s",errno,strerror(errno)];
   }
 }
 -(void)startSubProcess {
@@ -139,14 +154,16 @@ static CGSize $_screenSize(UIScrollView* view) {
     int fd;
     pid_t pid=forkpty(&fd,NULL,NULL,NULL);
     if(pid==-1){
-      [NSException raise:@"forkpty" format:@"%d: %s",errno,strerror(errno)];
+      [NSException raise:@"forkpty"
+       format:@"%d: %s",errno,strerror(errno)];
       return;
     }
     else if(pid==0){
       if(execve("/usr/bin/login",
        (char*[]){"login","-fp",getenv("USER")?:"mobile",NULL},
        (char*[]){"TERM=xterm",NULL})==-1){
-        [NSException raise:@"execve(login)" format:@"%d: %s",errno,strerror(errno)];
+        [NSException raise:@"execve(login)"
+         format:@"%d: %s",errno,strerror(errno)];
       }
       return;
     }
@@ -169,32 +186,32 @@ static CGSize $_screenSize(UIScrollView* view) {
   ptyHandle=nil;
 }
 -(void)dataAvailable:(NSNotification*)note {
-  NSData* data=[note.userInfo objectForKey:NSFileHandleNotificationDataItem];
-  if(!data.length){
+  NSData* input=[note.userInfo objectForKey:NSFileHandleNotificationDataItem];
+  if(!input.length){
     int status=0;
     [self stopSubProcess:&status];
-    data=[[NSString stringWithFormat:@"[Exited with status %d]\r\n"
+    input=[[NSString stringWithFormat:@"[Exited with status %d]\r\n"
      "Press any key to restart.\r\n",WIFEXITED(status)?WEXITSTATUS(status):-1]
-     dataUsingEncoding:NSUTF8StringEncoding];
+     dataUsingEncoding:NSASCIIStringEncoding];
   }
-  // Forward the subprocess data into the terminal character handler
-  [terminal putStreamData:data];
-  while(1){
-    VT100TCC token=[terminal getNextToken];
-    if(token.type==VT100_WAIT || token.type==VT100CC_NULL){break;}
-    if(token.type==VT100_SKIP){NSLog(@"VT100_SKIP");}
-    else if(token.type==VT100_NOTSUPPORT){NSLog(@"VT100_NOTSUPPORT");}
-    else {[screen putToken:token];}
-  }
-  [self refresh];
-  // Queue another read
+  BOOL bell=NO;
+  NSMutableData* output=[NSMutableData dataWithLength:0];
+  [vt100 processInput:input output:output bell:&bell];
+  if(output.length){[ptyHandle writeData:output];}
+  if(bell && bellSound){AudioServicesPlaySystemSound(bellSoundID);}
+  //! TODO: refresh only what changed
+  UITableView* tableView=self.tableView;
+  [tableView reloadData];
+  [tableView scrollToRowAtIndexPath:[NSIndexPath
+   indexPathForRow:vt100.numberOfLines-1 inSection:0]
+   atScrollPosition:UITableViewScrollPositionBottom animated:NO];
   [ptyHandle readInBackgroundAndNotify];
 }
--(void)putData:(NSData*)data {
+-(void)sendData:(NSData*)data {
   if(ptyHandle){[ptyHandle writeData:data];}
   else {
-    // The sub process previously exited, restart it at the users request.
-    [screen clearBuffer];
+    // restart the subprocess
+    [vt100 resetTerminal];
     [self startSubProcess];
   }
 }
@@ -211,57 +228,162 @@ static CGSize $_screenSize(UIScrollView* view) {
   return UIKeyboardAppearanceDark;
 }
 -(UIKeyboardType)keyboardType {
-  return UIKeyboardTypeASCIICapable;
+  return UIKeyboardTypeDefault;
 }
 -(BOOL)hasText {
-  return YES;// Make sure that the backspace key always works
+  return YES;// always enable the backspace key
 }
 -(void)deleteBackward {
-  [self putData:kBackspace];
+  [self sendData:kBackspace];
 }
--(void)insertText:(NSString*)input {
-  if(ctrlDown && input.length==1){
-    unichar c=[input characterAtIndex:0];
-    if(c>0x40 && c<0x60){c-=0x40;}
-    else if(c>0x60 && c<0x7b){c-=0x60;}
-    else {goto __sendKey;}
-    input=[NSString stringWithCharacters:&c length:1];
+-(void)insertText:(NSString*)text {
+  if(text.length==1){
+    unichar c=[text characterAtIndex:0];
+    if(c=='\n'){// send CR or CRLF
+      [self sendData:vt100.returnKey];
+      return;
+    }
+    if(ctrlDown){
+      if(c>0x40 && c<0x5b){c-=0x40;}
+      else if(c>0x60 && c<0x7b){c-=0x60;}
+    }
+    if(c<0x80){// send an ASCII character
+      [self sendData:[NSData dataWithBytes:(char[]){c} length:1]];
+      return;
+    }
   }
-  else if([input isEqualToString:@"\n"]){input=@"\r";}
-  __sendKey:[self putData:[input dataUsingEncoding:NSUTF8StringEncoding]];
-}
--(CGColorRef)colorAtIndex:(unsigned int)index {
-  return (index&COLOR_CODE_MASK)?
-   (index==CURSOR_TEXT)?fgCursorColor:(index==CURSOR_BG)?bgCursorColor:
-   (index==BG_COLOR_CODE || index==BG_COLOR_CODE+BOLD_MASK)?bgColor:
-   (index&BOLD_MASK)?fgBoldColor:fgColor:colorTable[index&0xff];
-}
--(void)refresh {
-  [screen resetDirty];
-  UITableView* tableView=self.tableView;
-  [tableView reloadData];
-  [tableView scrollToRowAtIndexPath:[NSIndexPath
-   indexPathForRow:screen.numberOfLines-1 inSection:0]
-   atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+  // send the encoded string
+  [self sendData:[text dataUsingEncoding:vt100.encoding]];
 }
 -(NSInteger)numberOfSectionsInTableView:(UITableView*)tableView {
   return 1;
 }
 -(NSInteger)tableView:(UITableView*)tableView numberOfRowsInSection:(NSInteger)section {
-  return screen.numberOfLines;
+  return vt100.numberOfLines;
 }
 -(UITableViewCell*)tableView:(UITableView*)tableView cellForRowAtIndexPath:(NSIndexPath*)ipath {
   UITableViewCell* cell=[tableView dequeueReusableCellWithIdentifier:@"Cell"];
-  if(!cell){
+  VT100Row* rowView;
+  if(cell){rowView=(VT100Row*)cell.backgroundView;}
+  else {
     cell=[[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
      reuseIdentifier:@"Cell"] autorelease];
-    [cell.backgroundView=[[VT100Row alloc] initWithDelegate:self] release];
+    cell.backgroundView=rowView=[[[VT100Row alloc] initWithBackgroundColor:bgDefault
+     ascent:glyphAscent height:glyphHeight midY:glyphMidY] autorelease];
   }
-  int offsetY=screen.numberOfLines-screen.height;
-  NSUInteger index=ipath.row;
-  [(VT100Row*)cell.backgroundView
-   setBuffer:[screen getLineAtIndex:index] length:screen.width
-   cursorX:(index==screen.cursorY+(offsetY>0?offsetY:0))?screen.cursorX:-1];
+  CFIndex length,cursorPosition;
+  screen_char_t* ptr=[vt100 charactersAtLineIndex:ipath.row
+   length:&length cursorPosition:&cursorPosition];
+  if(ptr){
+    unichar* ucbuf=malloc(length*sizeof(unichar));
+    CFIndex i;
+    for (i=0;i<length;i++){ucbuf[i]=ptr[i].c?:' ';}
+    CFStringRef ucstr=CFStringCreateWithCharactersNoCopy(NULL,ucbuf,length,kCFAllocatorMalloc);
+    CFMutableAttributedStringRef string=CFAttributedStringCreateMutable(NULL,length);
+    CFAttributedStringBeginEditing(string);
+    CFAttributedStringReplaceString(string,CFRangeMake(0,0),ucstr);
+    CFRelease(ucstr);// will automatically free(ucbuf)
+    CTFontRef fontface=NULL;
+    CGColorRef bgcolor=NULL,fgcolor=NULL,stcolor=NULL,ulcolor=NULL;
+    CFNumberRef ulstyle=NULL;
+    CFIndex ffspan=0,bgcspan=0,fgcspan=0,stcspan=0,ulcspan=0,ulsspan=0;
+    for (i=0;i<=length;i++,ptr++){
+      CTFontRef ff;
+      CGColorRef bgc,fgc,stc,ulc;
+      CFNumberRef uls;
+      if(i==length){
+        ff=NULL;
+        bgc=fgc=stc=ulc=NULL;
+        uls=NULL;
+      }
+      else {
+        ff=(ptr->bold==1)?ptr->italicize?ctFontBoldItalic:ctFontBold:
+         ptr->italicize?ctFontItalic:ctFont;
+        if(i==cursorPosition){
+          bgc=bgCursor;
+          fgc=fgCursor;
+        }
+        else {
+          bgc=ptr->bgcolor_isset?colorTable[ptr->bgcolor]:bgDefault;
+          fgc=ptr->fgcolor_isset?colorTable[(ptr->bold && ptr->fgcolor<8)?
+           ptr->fgcolor+8:ptr->fgcolor]:ptr->bold?fgBold:fgDefault;
+          if(ptr->inverse){
+            CGColorRef _fgc=fgc;
+            fgc=bgc;
+            bgc=_fgc;
+          }
+        }
+        stc=(ptr->strikethrough && fgc!=bgc)?fgc:NULL;
+        switch(ptr->underline){
+          case 1:
+            ulc=fgc;
+            uls=ctUnderlineStyleSingle;
+            break;
+          case 2:
+            ulc=fgc;
+            uls=ctUnderlineStyleDouble;
+            break;
+          default:
+            ulc=NULL;
+            uls=NULL;
+            break;
+        }
+        if(ptr->hidden){fgc=nullColor;}
+        if(bgc==bgDefault){bgc=NULL;}
+      }
+      if(fontface==ff){ffspan++;}
+      else {
+        if(fontface) CFAttributedStringSetAttribute(
+         string,CFRangeMake(i-ffspan,ffspan),
+         kCTFontAttributeName,fontface);
+        fontface=ff;
+        ffspan=1;
+      }
+      if(bgcolor==bgc){bgcspan++;}
+      else {
+        if(bgcolor) CFAttributedStringSetAttribute(
+         string,CFRangeMake(i-bgcspan,bgcspan),
+         kVTBackgroundColorAttributeName,bgcolor);
+        bgcolor=bgc;
+        bgcspan=1;
+      }
+      if(fgcolor==fgc){fgcspan++;}
+      else {
+        if(fgcolor) CFAttributedStringSetAttribute(
+         string,CFRangeMake(i-fgcspan,fgcspan),
+         kCTForegroundColorAttributeName,fgcolor);
+        fgcolor=fgc;
+        fgcspan=1;
+      }
+      if(stcolor==stc){stcspan++;}
+      else {
+        if(stcolor) CFAttributedStringSetAttribute(
+         string,CFRangeMake(i-stcspan,stcspan),
+         kVTStrikethroughColorAttributeName,stcolor);
+        stcolor=stc;
+        stcspan=1;
+      }
+      if(ulcolor==stc){ulcspan++;}
+      else {
+        if(ulcolor) CFAttributedStringSetAttribute(
+         string,CFRangeMake(i-ulcspan,ulcspan),
+         kCTUnderlineColorAttributeName,ulcolor);
+        ulcolor=ulc;
+        ulcspan=1;
+      }
+      if(ulstyle==uls){ulsspan++;}
+      else {
+        if(ulstyle) CFAttributedStringSetAttribute(
+         string,CFRangeMake(i-ulsspan,ulsspan),
+         kCTUnderlineStyleAttributeName,ulstyle);
+        ulstyle=uls;
+        ulsspan=1;
+      }
+    }
+    CFAttributedStringEndEditing(string);
+    [rowView renderString:string];
+    CFRelease(string);
+  }
   return cell;
 }
 -(void)handleZoneGesture:(UIGestureRecognizer*)gesture {
@@ -270,18 +392,18 @@ static CGSize $_screenSize(UIScrollView* view) {
   CGSize size=$_screenSize(tableView);
   UIKeyboardImpl* keyboard=[UIKeyboardImpl sharedInstance];
   BOOL right=(origin.x>size.width-60),shift=keyboard.isShifted;
-  NSData* input=(origin.y<60)?right?kDelete:(origin.x<60)?kInsert:shift?kPageUp:kUp:
+  NSData* kdata=(origin.y<60)?right?kDelete:(origin.x<60)?kInsert:shift?kPageUp:kUp:
    (origin.y>size.height-60)?right?kTab:(origin.x<60)?kEscape:shift?kPageDown:kDown:
    right?shift?kEnd:kRight:(origin.x<60)?shift?kHome:kLeft:nil;
-  if(input){
-    [self putData:input];
+  if(kdata){
+    [self sendData:kdata];
     if(shift && !keyboard.isShiftLocked){[keyboard setShift:NO];}
   }
 }
 -(void)handlePasteGesture:(UIGestureRecognizer*)gesture {
   UIPasteboard* pb=[UIPasteboard generalPasteboard];
   if([pb containsPasteboardTypes:UIPasteboardTypeListString]){
-    [self putData:[pb dataForPasteboardType:@"public.text"]];
+    [self sendData:[pb dataForPasteboardType:@"public.text"]];
   }
 }
 -(void)handleRepeatGesture:(UIGestureRecognizer*)gesture {
@@ -290,12 +412,12 @@ static CGSize $_screenSize(UIScrollView* view) {
     UITableView* tableView=self.tableView;
     CGPoint origin=$_screenOrigin(tableView,gesture);
     CGSize size=$_screenSize(tableView);
-    NSData* input=(origin.x<60)?kLeft:(origin.x>size.width-60)?kRight:
+    NSData* kdata=(origin.x<60)?kLeft:(origin.x>size.width-60)?kRight:
      (origin.y<60)?kUp:(origin.y>size.height-60)?kDown:nil;
-    if(input){
+    if(kdata){
       repeatTimer=[[NSTimer scheduledTimerWithTimeInterval:0.1
        target:self selector:@selector(repeatTimerFired:)
-       userInfo:input repeats:YES] retain];
+       userInfo:kdata repeats:YES] retain];
     }
   }
   else if(gesture.state==UIGestureRecognizerStateEnded){
@@ -306,7 +428,7 @@ static CGSize $_screenSize(UIScrollView* view) {
   }
 }
 -(void)repeatTimerFired:(NSTimer*)timer {
-  [self putData:timer.userInfo];
+  [self sendData:timer.userInfo];
 }
 -(void)handleCtrlGesture:(UIGestureRecognizer*)gesture {
   if(gesture.state==UIGestureRecognizerStateBegan){ctrlDown=YES;}
@@ -324,7 +446,7 @@ static CGSize $_screenSize(UIScrollView* view) {
 -(void)viewDidLoad {
   UITableView* tableView=self.tableView;
   tableView.indicatorStyle=UIScrollViewIndicatorStyleWhite;
-  tableView.backgroundColor=[UIColor colorWithCGColor:bgColor];
+  tableView.backgroundColor=[UIColor colorWithCGColor:bgDefault];
   tableView.allowsSelection=NO;
   tableView.separatorStyle=UITableViewCellSeparatorStyleNone;
   tableView.rowHeight=rowHeight;
@@ -382,15 +504,21 @@ static CGSize $_screenSize(UIScrollView* view) {
   [kBackspace release];
   unsigned int i;
   for (i=0;i<256;i++){CFRelease(colorTable[i]);}
-  CFRelease(bgColor);
-  CFRelease(bgCursorColor);
-  CFRelease(fgCursorColor);
-  CFRelease(fgColor);
-  CFRelease(fgBoldColor);
-  CFRelease(font);
+  CFRelease(nullColor);
+  CFRelease(bgDefault);
+  CFRelease(bgCursor);
+  CFRelease(fgDefault);
+  CFRelease(fgBold);
+  CFRelease(fgCursor);
+  CFRelease(ctFont);
+  CFRelease(ctFontBold);
+  CFRelease(ctFontItalic);
+  CFRelease(ctFontBoldItalic);
+  CFRelease(ctUnderlineStyleSingle);
+  CFRelease(ctUnderlineStyleDouble);
+  if(bellSound){AudioServicesDisposeSystemSoundID(bellSoundID);}
+  [vt100 release];
   [repeatTimer release];
-  [screen release];
-  [terminal release];
   [super dealloc];
 }
 @end

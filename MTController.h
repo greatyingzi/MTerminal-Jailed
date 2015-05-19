@@ -1,7 +1,8 @@
-#import "VT100Row.h"
-#import "VT100Screen.h"
+#import <AudioToolbox/AudioServices.h>
+#import <CoreText/CoreText.h>
+@class VT100;
 
-@interface MTController : UITableViewController <UIKeyInput,UIGestureRecognizerDelegate,VT100RowDelegate,ScreenBufferRefreshDelegate> {
+@interface MTController : UITableViewController <UIKeyInput,UIGestureRecognizerDelegate> {
   NSData* kUp;
   NSData* kDown;
   NSData* kLeft;
@@ -15,13 +16,23 @@
   NSData* kInsert;
   NSData* kDelete;
   NSData* kBackspace;
-  CGColorRef colorTable[256],fgColor,fgBoldColor;
-  NSTimer* repeatTimer;
-  VT100Screen* screen;
-  VT100Terminal* terminal;
+  CGColorRef colorTable[256],nullColor;
+  CGColorRef bgDefault,bgCursor;
+  CGColorRef fgDefault,fgBold,fgCursor;
+  CTFontRef ctFont;
+  CTFontRef ctFontBold;
+  CTFontRef ctFontItalic;
+  CTFontRef ctFontBoldItalic;
+  CFNumberRef ctUnderlineStyleSingle;
+  CFNumberRef ctUnderlineStyleDouble;
+  CGFloat glyphAscent,glyphHeight,glyphMidY;
+  CGFloat colWidth,rowHeight;
+  BOOL bellSound;
+  SystemSoundID bellSoundID;
   NSFileHandle* ptyHandle;
   pid_t ptypid;
+  VT100* vt100;
+  NSTimer* repeatTimer;
   BOOL ctrlDown;
-  CGFloat colWidth,rowHeight;
 }
 @end
