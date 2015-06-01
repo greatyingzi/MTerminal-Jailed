@@ -3,19 +3,20 @@
 @class VT100;
 
 @interface MTController : UITableViewController <UIKeyInput,UIGestureRecognizerDelegate> {
-  NSData* kUp;
-  NSData* kDown;
-  NSData* kLeft;
-  NSData* kRight;
-  NSData* kPageUp;
-  NSData* kPageDown;
-  NSData* kHome;
-  NSData* kEnd;
-  NSData* kEscape;
-  NSData* kTab;
-  NSData* kInsert;
-  NSData* kDelete;
-  NSData* kBackspace;
+  NSData* kbUp[2];
+  NSData* kbDown[2];
+  NSData* kbRight[2];
+  NSData* kbLeft[2];
+  NSData* kbHome[2];
+  NSData* kbEnd[2];
+  NSData* kbInsert;
+  NSData* kbDelete;
+  NSData* kbPageUp;
+  NSData* kbPageDown;
+  NSData* kbTab;
+  NSData* kbEscape;
+  NSData* kbBack[2];
+  NSData* kbReturn[2];
   CGColorRef colorTable[256],nullColor;
   CGColorRef bgDefault,bgCursor;
   CGColorRef fgDefault,fgBold,fgCursor;
