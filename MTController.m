@@ -1,4 +1,5 @@
 #include "MTController.h"
+#include "MTScratchpad.h"
 #include "VT100.h"
 #include "VT100Row.h"
 #include "vttext.h"
@@ -19,19 +20,38 @@ static CGColorRef $_createRGBColor(CGColorSpaceRef rgbspace,CFMutableDictionaryR
    CGColorCreate(rgbspace,(CGFloat[]){
    ((v>>16)&0xff)/255.,((v>>8)&0xff)/255.,(v&0xff)/255.,1});
 }
-static CGPoint $_screenOrigin(UIScrollView* view,UIGestureRecognizer* gesture) {
-  CGPoint origin=[gesture locationInView:view];
-  CGPoint offset=view.contentOffset;
-  origin.x-=offset.x;
-  origin.y-=offset.y;
-  return origin;
-}
 static CGSize $_screenSize(UIScrollView* view) {
   CGSize size=view.bounds.size;
   UIEdgeInsets inset=view.contentInset;
   size.width-=inset.left+inset.right;
   size.height-=inset.top+inset.bottom;
   return size;
+}
+static enum {
+  kTapZoneTopLeft,
+  kTapZoneTop,
+  kTapZoneTopRight,
+  kTapZoneLeft,
+  kTapZoneCenter,
+  kTapZoneRight,
+  kTapZoneBottomLeft,
+  kTapZoneBottom,
+  kTapZoneBottomRight,
+} $_tapZone(UIScrollView* view,UIGestureRecognizer* gesture) {
+  CGPoint origin=[gesture locationInView:view];
+  CGPoint offset=view.contentOffset;
+  origin.x-=offset.x;
+  origin.y-=offset.y;
+  CGSize size=$_screenSize(view);
+  CGFloat hmargin=size.width/5,vmargin=size.height/5;
+  if(hmargin<60){hmargin=60;}
+  if(vmargin<60){vmargin=60;}
+  BOOL right=(origin.x>size.width-hmargin);
+  return (origin.y<vmargin)?right?kTapZoneTopRight:
+   (origin.x<hmargin)?kTapZoneTopLeft:kTapZoneTop:
+   (origin.y>size.height-vmargin)?right?kTapZoneBottomRight:
+   (origin.x<hmargin)?kTapZoneBottomLeft:kTapZoneBottom:
+   right?kTapZoneRight:(origin.x<hmargin)?kTapZoneLeft:kTapZoneCenter;
 }
 
 @implementation MTController
@@ -200,6 +220,9 @@ static CGSize $_screenSize(UIScrollView* view) {
   }
   return self;
 }
+-(BOOL)isRunning {
+  return ptyHandle?YES:NO;
+}
 -(void)redrawScreen {
   CFSetRef iset[3];
   UITableView* tableView=self.tableView;
@@ -305,6 +328,10 @@ static CGSize $_screenSize(UIScrollView* view) {
   [ptyHandle readInBackgroundAndNotify];
 }
 -(void)sendData:(NSData*)data {
+  if(!ctrlLock){
+    [[UIMenuController sharedMenuController]
+     setMenuVisible:NO animated:YES];
+  }
   if(ptyHandle){[ptyHandle writeData:data];}
   else {
     // restart the subprocess
@@ -324,9 +351,6 @@ static CGSize $_screenSize(UIScrollView* view) {
 -(UIKeyboardAppearance)keyboardAppearance {
   return UIKeyboardAppearanceDark;
 }
--(UIKeyboardType)keyboardType {
-  return UIKeyboardTypeDefault;
-}
 -(UITextRange*)selectedTextRange {
   return nil;// from <UITextInput>
 }
@@ -339,20 +363,23 @@ static CGSize $_screenSize(UIScrollView* view) {
 -(void)insertText:(NSString*)text {
   if(text.length==1){
     unichar c=[text characterAtIndex:0];
-    if(c=='\n'){// send CR or CRLF
+    if(c=='\n'){
+      // send CR or CRLF
       [self sendData:kbReturn[vt100.bLNM]];
       return;
     }
-    if(ctrlDown){// send Control+(A..Z)
+    if([UIMenuController sharedMenuController].menuVisible){
+      // send Control+(A..Z)
       if(c>0x40 && c<0x5b){c-=0x40;}
       else if(c>0x60 && c<0x7b){c-=0x60;}
     }
-    if(c<0x80){// send an ASCII character
+    if(c<0x80){
+      // send an ASCII character
       [self sendData:[NSData dataWithBytes:(char[]){c} length:1]];
       return;
     }
   }
-  // send the encoded string
+  // send an encoded string
   [self sendData:[text dataUsingEncoding:NSUTF8StringEncoding]];
 }
 -(NSInteger)numberOfSectionsInTableView:(UITableView*)tableView {
@@ -397,7 +424,8 @@ static CGSize $_screenSize(UIScrollView* view) {
         uls=NULL;
       }
       else {
-        ff=(ptr->bold==1)?ptr->italicize?ctFontBoldItalic:ctFontBold:
+        BOOL bold=ptr->weight==kFontWeightBold;
+        ff=bold?ptr->italicize?ctFontBoldItalic:ctFontBold:
          ptr->italicize?ctFontItalic:ctFont;
         if(i==cursorColumn){
           bgc=bgCursor;
@@ -405,8 +433,8 @@ static CGSize $_screenSize(UIScrollView* view) {
         }
         else {
           bgc=ptr->bgcolor_isset?colorTable[ptr->bgcolor]:bgDefault;
-          fgc=ptr->fgcolor_isset?colorTable[(ptr->bold && ptr->fgcolor<8)?
-           ptr->fgcolor+8:ptr->fgcolor]:ptr->bold?fgBold:fgDefault;
+          fgc=ptr->fgcolor_isset?colorTable[(bold && ptr->fgcolor<8)?
+           ptr->fgcolor+8:ptr->fgcolor]:bold?fgBold:fgDefault;
           if(ptr->inverse){
             CGColorRef _fgc=fgc;
             fgc=bgc;
@@ -415,11 +443,11 @@ static CGSize $_screenSize(UIScrollView* view) {
         }
         stc=(ptr->strikethrough && fgc!=bgc)?fgc:NULL;
         switch(ptr->underline){
-          case 1:
+          case kUnderlineSingle:
             ulc=fgc;
             uls=ctUnderlineStyleSingle;
             break;
-          case 2:
+          case kUnderlineDouble:
             ulc=fgc;
             uls=ctUnderlineStyleDouble;
             break;
@@ -486,44 +514,53 @@ static CGSize $_screenSize(UIScrollView* view) {
   }
   return cell;
 }
--(void)handleZoneGesture:(UIGestureRecognizer*)gesture {
-  UITableView* tableView=self.tableView;
-  CGPoint origin=$_screenOrigin(tableView,gesture);
-  CGSize size=$_screenSize(tableView);
-  UIKeyboardImpl* keyboard=[UIKeyboardImpl sharedInstance];
-  BOOL right=(origin.x>size.width-60),shift=keyboard.isShifted;
-  NSData* kbdata=(origin.y<60)?right?kbDelete:(origin.x<60)?kbInsert:
-   shift?kbPageUp:kbUp[vt100.bDECCKM]:
-   (origin.y>size.height-60)?right?kbTab:(origin.x<60)?kbEscape:
-   shift?kbPageDown:kbDown[vt100.bDECCKM]:
-   right?shift?kbEnd[vt100.bDECCKM]:kbRight[vt100.bDECCKM]:
-   (origin.x<60)?shift?kbHome[vt100.bDECCKM]:kbLeft[vt100.bDECCKM]:nil;
-  if(kbdata){
-    [self sendData:kbdata];
-    if(shift && !keyboard.isShiftLocked){[keyboard setShift:NO];}
+-(void)handleKeyboardGesture:(UIGestureRecognizer*)gesture {
+  if(gesture.state==UIGestureRecognizerStateBegan){
+    if(self.isFirstResponder){[self resignFirstResponder];}
+    else {[self becomeFirstResponder];}
   }
 }
--(void)handlePasteGesture:(UIGestureRecognizer*)gesture {
-  UIPasteboard* pb=[UIPasteboard generalPasteboard];
-  if([pb containsPasteboardTypes:UIPasteboardTypeListString]){
-    [self sendData:[pb dataForPasteboardType:@"public.text"]];
+-(void)handleZoneGesture:(UIGestureRecognizer*)gesture {
+  UIKeyboardImpl* keyboard=[UIKeyboardImpl sharedInstance];
+  BOOL shift=keyboard.isShifted;
+  NSData* kbdata;
+  switch($_tapZone(self.tableView,gesture)){
+    case kTapZoneTopLeft:kbdata=kbInsert;break;
+    case kTapZoneTopRight:kbdata=kbDelete;break;
+    case kTapZoneBottomLeft:kbdata=kbEscape;break;
+    case kTapZoneBottomRight:kbdata=kbTab;break;
+    case kTapZoneTop:kbdata=shift?kbPageUp:kbUp[vt100.bDECCKM];break;
+    case kTapZoneBottom:kbdata=shift?kbPageDown:kbDown[vt100.bDECCKM];break;
+    case kTapZoneLeft:kbdata=shift?kbHome[vt100.bDECCKM]:kbLeft[vt100.bDECCKM];break;
+    case kTapZoneRight:kbdata=shift?kbEnd[vt100.bDECCKM]:kbRight[vt100.bDECCKM];break;
+    default:return;
   }
+  [self sendData:kbdata];
+  if(shift && !keyboard.isShiftLocked){[keyboard setShift:NO];}
 }
 -(void)handleRepeatGesture:(UIGestureRecognizer*)gesture {
   if(gesture.state==UIGestureRecognizerStateBegan){
     if(repeatTimer){return;}
+    NSData* kbdata;
     UITableView* tableView=self.tableView;
-    CGPoint origin=$_screenOrigin(tableView,gesture);
-    CGSize size=$_screenSize(tableView);
-    NSData* kbdata=(origin.x<60)?kbLeft[vt100.bDECCKM]:
-     (origin.x>size.width-60)?kbRight[vt100.bDECCKM]:
-     (origin.y<60)?kbUp[vt100.bDECCKM]:
-     (origin.y>size.height-60)?kbDown[vt100.bDECCKM]:nil;
-    if(kbdata){
-      repeatTimer=[[NSTimer scheduledTimerWithTimeInterval:0.1
-       target:self selector:@selector(repeatTimerFired:)
-       userInfo:kbdata repeats:YES] retain];
+    switch($_tapZone(tableView,gesture)){
+      case kTapZoneTop:kbdata=kbUp[vt100.bDECCKM];break;
+      case kTapZoneBottom:kbdata=kbDown[vt100.bDECCKM];break;
+      case kTapZoneLeft:kbdata=kbLeft[vt100.bDECCKM];break;
+      case kTapZoneRight:kbdata=kbRight[vt100.bDECCKM];break;
+      case kTapZoneCenter:
+        if([self becomeFirstResponder]){
+          ctrlLock=NO;
+          UIMenuController* menu=[UIMenuController sharedMenuController];
+          [menu setTargetRect:(CGRect){
+           .origin=[gesture locationInView:tableView]} inView:tableView];
+          [menu setMenuVisible:YES animated:YES];
+        }
+      default:return;
     }
+    repeatTimer=[[NSTimer scheduledTimerWithTimeInterval:0.1
+     target:self selector:@selector(repeatTimerFired:)
+     userInfo:kbdata repeats:YES] retain];
   }
   else if(gesture.state==UIGestureRecognizerStateEnded){
     if(!repeatTimer){return;}
@@ -535,18 +572,59 @@ static CGSize $_screenSize(UIScrollView* view) {
 -(void)repeatTimerFired:(NSTimer*)timer {
   [self sendData:timer.userInfo];
 }
--(void)handleCtrlGesture:(UIGestureRecognizer*)gesture {
-  if(gesture.state==UIGestureRecognizerStateBegan){ctrlDown=YES;}
-  else if(gesture.state==UIGestureRecognizerStateEnded){ctrlDown=NO;}
+-(BOOL)canPerformAction:(SEL)action withSender:(id)sender {
+  if(!self.isFirstResponder){return NO;}
+  return action==@selector(select:) || action==@selector(paste:)
+   || (!ctrlLock && action==@selector(ctrlLock:));
 }
--(void)handleKeyboardGesture:(UIGestureRecognizer*)gesture {
-  if(gesture.state==UIGestureRecognizerStateBegan){
-    if(self.isFirstResponder){[self resignFirstResponder];}
-    else {[self becomeFirstResponder];}
+-(void)select:(id)sender {
+  NSMutableString* content=[NSMutableString string];
+  CFIndex count=vt100.numberOfLines,i,blankspan=0;
+  for (i=0;i<count;i++){
+    CFIndex length,j;
+    screen_char_t* ptr=[vt100 charactersAtLineIndex:i length:&length cursorColumn:NULL];
+    while(length && !ptr[length-1].c){length--;}
+    if(i && !ptr->wrapped){
+      [content appendString:@"\n"];
+      if(!length){blankspan++;}
+    }
+    if(length){
+      blankspan=0;
+      unichar* ucbuf=malloc(length*sizeof(unichar));
+      for (j=0;j<length;j++){ucbuf[j]=ptr[j].c?:0xA0;}
+      CFStringRef ucstr=CFStringCreateWithCharactersNoCopy(NULL,ucbuf,length,kCFAllocatorMalloc);
+      [content appendString:(NSString*)ucstr];
+      CFRelease(ucstr);// will automatically free(ucbuf)
+    }
+  }
+  if(blankspan){
+    NSUInteger length=content.length;
+    [content deleteCharactersInRange:NSMakeRange(length-blankspan,blankspan)];
+  }
+  CFStringRef fontName=CTFontCopyFullName(ctFont);
+  MTScratchpad* scratch=[[MTScratchpad alloc]
+   initWithTitle:[NSString stringWithFormat:@"PID %d",ptypid] content:content
+   font:[UIFont fontWithName:(NSString*)fontName size:CTFontGetSize(ctFont)]
+   bgColor:[UIColor colorWithCGColor:bgDefault]
+   fgColor:[UIColor colorWithCGColor:fgDefault]];
+  CFRelease(fontName);
+  UINavigationController* nav=[[UINavigationController alloc]
+   initWithRootViewController:scratch];
+  [scratch release];
+  nav.navigationBar.barStyle=UIBarStyleBlack;
+  [self presentViewController:nav animated:YES completion:NULL];
+  [nav release];
+}
+-(void)paste:(id)sender {
+  UIPasteboard* pb=[UIPasteboard generalPasteboard];
+  if([pb containsPasteboardTypes:UIPasteboardTypeListString]){
+    [self sendData:[pb dataForPasteboardType:@"public.text"]];
   }
 }
--(BOOL)gestureRecognizer:(UIGestureRecognizer*)gesture1 shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer*)gesture2 {
-  return YES;
+-(void)ctrlLock:(id)sender {
+  UIMenuController* menu=[UIMenuController sharedMenuController];
+  ctrlLock=menu.menuVisible=YES;
+  [menu update];
 }
 -(void)viewDidLoad {
   UITableView* tableView=self.tableView;
@@ -555,33 +633,25 @@ static CGSize $_screenSize(UIScrollView* view) {
   tableView.allowsSelection=NO;
   tableView.separatorStyle=UITableViewCellSeparatorStyleNone;
   tableView.rowHeight=rowHeight;
-  UITapGestureRecognizer* zoneGesture=[[UITapGestureRecognizer alloc]
-   initWithTarget:self action:@selector(handleZoneGesture:)];
-  [tableView addGestureRecognizer:zoneGesture];
-  [zoneGesture release];
-  UITapGestureRecognizer* pasteGesture=[[UITapGestureRecognizer alloc]
-   initWithTarget:self action:@selector(handlePasteGesture:)];
-  pasteGesture.numberOfTouchesRequired=2;
-  pasteGesture.numberOfTapsRequired=2;
-  [tableView addGestureRecognizer:pasteGesture];
-  [pasteGesture release];
-  UILongPressGestureRecognizer* repeatGesture=[[UILongPressGestureRecognizer alloc]
-   initWithTarget:self action:@selector(handleRepeatGesture:)];
-  repeatGesture.minimumPressDuration=0.25;
-  [tableView addGestureRecognizer:repeatGesture];
-  [repeatGesture release];
-  UILongPressGestureRecognizer* ctrlGesture=[[UILongPressGestureRecognizer alloc]
-   initWithTarget:self action:@selector(handleCtrlGesture:)];
-  ctrlGesture.minimumPressDuration=0;
-  ctrlGesture.cancelsTouchesInView=NO;
-  ctrlGesture.delegate=self;
-  [tableView addGestureRecognizer:ctrlGesture];
-  [ctrlGesture release];
   UILongPressGestureRecognizer* kbGesture=[[UILongPressGestureRecognizer alloc]
    initWithTarget:self action:@selector(handleKeyboardGesture:)];
   kbGesture.numberOfTouchesRequired=2;
   [tableView addGestureRecognizer:kbGesture];
   [kbGesture release];
+  UITapGestureRecognizer* zoneGesture=[[UITapGestureRecognizer alloc]
+   initWithTarget:self action:@selector(handleZoneGesture:)];
+  [tableView addGestureRecognizer:zoneGesture];
+  [zoneGesture release];
+  UILongPressGestureRecognizer* repeatGesture=[[UILongPressGestureRecognizer alloc]
+   initWithTarget:self action:@selector(handleRepeatGesture:)];
+  repeatGesture.minimumPressDuration=0.25;
+  [tableView addGestureRecognizer:repeatGesture];
+  [repeatGesture release];
+  UIMenuItem* item=[[UIMenuItem alloc]
+   initWithTitle:@"Ctrl Lock" action:@selector(ctrlLock:)];
+  [UIMenuController sharedMenuController].menuItems=[NSArray
+   arrayWithObject:item];
+  [item release];
 }
 -(BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)orientation {
   return orientation==UIInterfaceOrientationPortrait

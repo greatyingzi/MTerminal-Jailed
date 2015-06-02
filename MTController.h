@@ -2,7 +2,7 @@
 #import <CoreText/CoreText.h>
 @class VT100;
 
-@interface MTController : UITableViewController <UIKeyInput,UIGestureRecognizerDelegate> {
+@interface MTController : UITableViewController <UIKeyInput> {
   NSData* kbUp[2];
   NSData* kbDown[2];
   NSData* kbRight[2];
@@ -34,6 +34,7 @@
   pid_t ptypid;
   VT100* vt100;
   NSTimer* repeatTimer;
-  BOOL ctrlDown;
+  BOOL ctrlLock;
 }
+-(BOOL)isRunning;
 @end

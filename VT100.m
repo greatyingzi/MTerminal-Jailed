@@ -185,7 +185,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   if(index<0 || index>=CFArrayGetCount(lineBuffer)){return NULL;}
   screen_line_t* line=(screen_line_t*)CFArrayGetValueAtIndex(lineBuffer,index);
   *length=screenWidth;
-  *cursorColumn=(bDECTCEM && line==currentLine)?cursorX:-1;
+  if(cursorColumn){*cursorColumn=(bDECTCEM && line==currentLine)?cursorX:-1;}
   return line->buf;
 }
 -(CFIndex)numberOfLines {
@@ -399,7 +399,8 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
                   windowTop=0;
                   windowBottom=screenHeight-1;
                   [self updateCurrentLine];
-                  break;}
+                  break;
+                }
                 case 47:
                 case 1047:
                 case 1049:
@@ -599,7 +600,8 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
             screen_char_t* end=ptr+j;
             while(ptr<end){*(ptr++)=nullChar;}
             [self changedLineAtIndex:currentIndex];
-            break;}
+            break;
+          }
           case 'S':// SU (Scroll Up)
             [self shiftLines:(0<nparams && params[0]>1)?params[0]:1
              fromY:windowTop toY:windowBottom];
@@ -652,18 +654,18 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
                   // all attributes off
                   memset(&nullChar,0,sizeof(nullChar));
                   break;
-                case 1:nullChar.bold=1;break;
-                case 2:nullChar.bold=-1;break;
+                case 1:nullChar.weight=kFontWeightBold;break;
+                case 2:nullChar.weight=kFontWeightFaint;break;
                 case 3:nullChar.italicize=true;break;
-                case 4:nullChar.underline=1;break;
+                case 4:nullChar.underline=kUnderlineSingle;break;
                 case 5:nullChar.blink=true;break;
                 case 7:nullChar.inverse=true;break;
                 case 8:nullChar.hidden=true;break;
                 case 9:nullChar.strikethrough=true;break;
-                case 21:nullChar.underline=2;break;
-                case 22:nullChar.bold=0;break;
+                case 21:nullChar.underline=kUnderlineDouble;break;
+                case 22:nullChar.weight=kFontWeightNormal;break;
                 case 23:nullChar.italicize=false;break;
-                case 24:nullChar.underline=0;break;
+                case 24:nullChar.underline=kUnderlineNone;break;
                 case 25:nullChar.blink=false;break;
                 case 27:nullChar.inverse=false;break;
                 case 28:nullChar.hidden=false;break;
@@ -732,7 +734,8 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
                  cursorY+1-(bDECOM?windowTop:0),cursorX+1);
                 if(len>0){[output appendBytes:msg length:len];}
                 if(len!=-1){free(msg);}
-                break;}
+                break;
+              }
             }
             break;
           case 'q':break;//! DECLL (Load LEDs)
@@ -791,7 +794,8 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
           bPastEOL=false;
           cursorX=cursorY=0;
           [self updateCurrentLine];
-          break;}
+          break;
+        }
       }
     }
     else if(sequence==kSequenceSCS){
@@ -827,13 +831,15 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
         // skip zero-width characters
         if(uc==0x200b || uc==0x200c || uc==0x200d || uc==0xfeff){continue;}
       }
+      Boolean wrapped=false;
       if(bPastEOL){
         // either auto-wrap or discard this character
         if(!bDECAWM){continue;}
         [self changedLineAtIndex:currentIndex];
+        [self nextLine];
         bPastEOL=false;
         cursorX=0;
-        [self nextLine];
+        wrapped=true;
       }
       else if(bIRM && cursorX<screenWidth-1){
         // insert mode: shift characters to the right
@@ -842,6 +848,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
       }
       currentLine->buf[cursorX]=nullChar;
       currentLine->buf[cursorX].c=uc;
+      if(wrapped){currentLine->buf[cursorX].wrapped=true;}
       [self changedLineAtIndex:currentIndex];
       if(cursorX<screenWidth-1){cursorX++;}
       else {bPastEOL=true;}

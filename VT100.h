@@ -2,15 +2,24 @@ typedef struct screen_char_t {
   unichar c;
   unsigned char bgcolor;
   unsigned char fgcolor;
-  unsigned int bgcolor_isset:1;
-  unsigned int fgcolor_isset:1;
-  int bold:2;// -1=faint, 0=normal, 1=bold
-  unsigned int italicize:1;
-  unsigned int underline:2;// 0=normal, 1=single, 2=double
-  unsigned int blink:1;
-  unsigned int inverse:1;
-  unsigned int hidden:1;
-  unsigned int strikethrough:1;
+  Boolean bgcolor_isset:1;
+  Boolean fgcolor_isset:1;
+  enum {
+    kFontWeightNormal,
+    kFontWeightBold,
+    kFontWeightFaint,
+  } weight:2;
+  Boolean italicize:1;
+  enum {
+    kUnderlineNone,
+    kUnderlineSingle,
+    kUnderlineDouble,
+  } underline:2;
+  Boolean blink:1;
+  Boolean inverse:1;
+  Boolean hidden:1;
+  Boolean strikethrough:1;
+  Boolean wrapped:1;
 } screen_char_t;
 
 typedef struct screen_line_t {

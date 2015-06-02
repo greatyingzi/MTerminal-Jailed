@@ -1,7 +1,7 @@
 Package: com.officialscheduler.mterminal
 Name: MTerminal
 Depends: system-cmds
-Version: 1.1
+Version: 1.2
 Architecture: iphoneos-arm
 Description: A MobileTerminal fork
 Maintainer: lordscotland <admin@officialscheduler.com>
