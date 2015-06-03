@@ -1,6 +1,9 @@
 #import <CoreText/CoreText.h>
 
-@interface VT100Row : UIView {
+#define kMTBackgroundColorAttributeName CFSTR("MTBackgroundColor")
+#define kMTStrikethroughColorAttributeName CFSTR("MTStrikethroughColor")
+
+@interface MTRowView : UIView {
   CGColorRef bgColor;
   CGFloat glyphAscent,glyphHeight,glyphMidY;
   CTLineRef ctLine;

@@ -1,5 +1,4 @@
 #include "VT100.h"
-#include "vttext.h"
 #include <libkern/OSAtomic.h>
 
 #define TAB_WIDTH 8

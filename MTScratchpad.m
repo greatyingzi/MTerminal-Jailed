@@ -37,11 +37,6 @@
   [view.textColor=fgColor release];fgColor=nil;
   [self.view=view release];
 }
--(BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)orientation {
-  return orientation==UIInterfaceOrientationPortrait
-   || orientation==UIInterfaceOrientationLandscapeLeft
-   || orientation==UIInterfaceOrientationLandscapeRight;
-}
 -(void)dealloc {
   [content release];
   [font release];

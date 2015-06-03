@@ -1,4 +1,6 @@
-@interface MTScratchpad : UIViewController {
+#import "MTKBAvoiding.h"
+
+@interface MTScratchpad : MTKBAvoiding {
   NSString* content;
   UIFont* font;
   UIColor* bgColor;

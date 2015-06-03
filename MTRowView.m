@@ -1,5 +1,4 @@
-#include "VT100Row.h"
-#include "vttext.h"
+#include "MTRowView.h"
 #include <libkern/OSAtomic.h>
 
 typedef struct hspan_t {
@@ -30,7 +29,7 @@ static void $_appendSpan(CFMutableDictionaryRef map,CFTypeRef key,CGFloat x,CGFl
   CFArrayAppendValue(spans,span);
 }
 
-@implementation VT100Row
+@implementation MTRowView
 -(id)initWithBackgroundColor:(CGColorRef)_bgColor ascent:(CGFloat)_glyphAscent height:(CGFloat)_glyphHeight midY:(CGFloat)_glyphMidY {
   if((self=[super init])){
     bgColor=CGColorRetain(_bgColor);
@@ -62,10 +61,10 @@ static void $_appendSpan(CFMutableDictionaryRef map,CFTypeRef key,CGFloat x,CGFl
      CFRangeMake(0,0),NULL,NULL,NULL);
     CFDictionaryRef attr=CTRunGetAttributes(run);
     CGColorRef bgcolor=(CGColorRef)CFDictionaryGetValue(
-     attr,kVTBackgroundColorAttributeName);
+     attr,kMTBackgroundColorAttributeName);
     if(bgcolor){$_appendSpan(bgMap,bgcolor,x,width);}
     CGColorRef stcolor=(CGColorRef)CFDictionaryGetValue(
-     attr,kVTStrikethroughColorAttributeName);
+     attr,kMTStrikethroughColorAttributeName);
     if(stcolor){$_appendSpan(stMap,stcolor,x,width);}
     x+=width;
   }

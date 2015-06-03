@@ -1,8 +1,9 @@
 #import <AudioToolbox/AudioServices.h>
 #import <CoreText/CoreText.h>
+#import "MTKBAvoiding.h"
 @class VT100;
 
-@interface MTController : UITableViewController <UIKeyInput> {
+@interface MTController : MTKBAvoiding <UIKeyInput,UITableViewDataSource> {
   NSData* kbUp[2];
   NSData* kbDown[2];
   NSData* kbRight[2];

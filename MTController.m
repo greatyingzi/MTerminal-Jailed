@@ -1,8 +1,7 @@
 #include "MTController.h"
+#include "MTRowView.h"
 #include "MTScratchpad.h"
 #include "VT100.h"
-#include "VT100Row.h"
-#include "vttext.h"
 #include <sys/ioctl.h>
 #include <util.h>
 
@@ -23,7 +22,6 @@ static CGColorRef $_createRGBColor(CGColorSpaceRef rgbspace,CFMutableDictionaryR
 static CGSize $_screenSize(UIScrollView* view) {
   CGSize size=view.bounds.size;
   UIEdgeInsets inset=view.contentInset;
-  size.width-=inset.left+inset.right;
   size.height-=inset.top+inset.bottom;
   return size;
 }
@@ -37,7 +35,8 @@ static enum {
   kTapZoneBottomLeft,
   kTapZoneBottom,
   kTapZoneBottomRight,
-} $_tapZone(UIScrollView* view,UIGestureRecognizer* gesture) {
+} $_tapZone(UIGestureRecognizer* gesture) {
+  UIScrollView* view=(UIScrollView*)gesture.view;
   CGPoint origin=[gesture locationInView:view];
   CGPoint offset=view.contentOffset;
   origin.x-=offset.x;
@@ -53,6 +52,11 @@ static enum {
    (origin.x<hmargin)?kTapZoneBottomLeft:kTapZoneBottom:
    right?kTapZoneRight:(origin.x<hmargin)?kTapZoneLeft:kTapZoneCenter;
 }
+
+@interface MTRespondingTableView : UITableView @end
+@implementation MTRespondingTableView
+-(BOOL)canBecomeFirstResponder {return YES;}
+@end
 
 @implementation MTController
 -(id)init {
@@ -211,12 +215,6 @@ static enum {
        &bellSoundID)==kAudioServicesNoError;
       CFRelease(soundURL);
     }
-    // observe keyboard show/hide events
-    NSNotificationCenter* center=[NSNotificationCenter defaultCenter];
-    [center addObserver:self selector:@selector(startSubProcess)
-     name:UIKeyboardDidShowNotification object:nil];
-    [center addObserver:self selector:@selector(updateScreenSize)
-     name:UIKeyboardDidHideNotification object:nil];
   }
   return self;
 }
@@ -225,7 +223,7 @@ static enum {
 }
 -(void)redrawScreen {
   CFSetRef iset[3];
-  UITableView* tableView=self.tableView;
+  UITableView* tableView=(UITableView*)self.view;
   if([vt100 copyChanges:&iset[0] deletions:&iset[1] insertions:&iset[2]]){
     [UIView setAnimationsEnabled:NO];
     [tableView beginUpdates];
@@ -257,15 +255,16 @@ static enum {
    indexPathForRow:vt100.numberOfLines-1 inSection:0]
    atScrollPosition:UITableViewScrollPositionBottom animated:NO];
 }
--(void)updateScreenSize {
-  CGSize screenSize=$_screenSize(self.tableView);
-  CFIndex width=screenSize.width/colWidth;
-  CFIndex height=screenSize.height/rowHeight;
+-(void)screenSizeDidChange {
+  CGSize size=$_screenSize((UIScrollView*)self.view);
+  CFIndex width=size.width/colWidth;
+  CFIndex height=size.height/rowHeight;
   if(width<1 || height<1){return;}
   if(vt100){[vt100 setWidth:width height:height];}
   else {
     vt100=[[VT100 alloc] initWithWidth:width height:height];
     vt100.encoding=kCFStringEncodingUTF8;
+    [self startSubProcess];
   }
   if(ptyHandle && ioctl(ptyHandle.fileDescriptor,TIOCSWINSZ,
    &(struct winsize){.ws_col=width,.ws_row=height})==-1){
@@ -275,31 +274,29 @@ static enum {
   [self redrawScreen];
 }
 -(void)startSubProcess {
-  if(!ptyHandle){
-    int fd;
-    pid_t pid=forkpty(&fd,NULL,NULL,NULL);
-    if(pid==-1){
-      [NSException raise:@"forkpty"
-       format:@"%d: %s",errno,strerror(errno)];
-      return;
-    }
-    else if(pid==0){
-      if(execve("/usr/bin/login",
-       (char*[]){"login","-fp",getenv("USER")?:"mobile",NULL},
-       (char*[]){"TERM=xterm",NULL})==-1){
-        [NSException raise:@"execve(login)"
-         format:@"%d: %s",errno,strerror(errno)];
-      }
-      return;
-    }
-    ptyHandle=[[NSFileHandle alloc] initWithFileDescriptor:fd closeOnDealloc:YES];
-    ptypid=pid;
-    [[NSNotificationCenter defaultCenter]
-     addObserver:self selector:@selector(dataAvailable:)
-     name:NSFileHandleReadCompletionNotification object:ptyHandle];
-    [ptyHandle readInBackgroundAndNotify];
+  if(ptyHandle){return;}
+  int fd;
+  pid_t pid=forkpty(&fd,NULL,NULL,NULL);
+  if(pid==-1){
+    [NSException raise:@"forkpty"
+     format:@"%d: %s",errno,strerror(errno)];
+    return;
   }
-  [self updateScreenSize];
+  else if(pid==0){
+    if(execve("/usr/bin/login",
+     (char*[]){"login","-fp",getenv("USER")?:"mobile",NULL},
+     (char*[]){"TERM=xterm",NULL})==-1){
+      [NSException raise:@"execve(login)"
+       format:@"%d: %s",errno,strerror(errno)];
+    }
+    return;
+  }
+  ptyHandle=[[NSFileHandle alloc] initWithFileDescriptor:fd closeOnDealloc:YES];
+  ptypid=pid;
+  [[NSNotificationCenter defaultCenter]
+   addObserver:self selector:@selector(dataAvailable:)
+   name:NSFileHandleReadCompletionNotification object:ptyHandle];
+  [ptyHandle readInBackgroundAndNotify];
 }
 -(void)stopSubProcess:(int*)status {
   if(!ptyHandle){return;}
@@ -337,6 +334,7 @@ static enum {
     // restart the subprocess
     [vt100 resetTerminal];
     [self startSubProcess];
+    [self screenSizeDidChange];
   }
 }
 -(BOOL)canBecomeFirstResponder {
@@ -390,12 +388,12 @@ static enum {
 }
 -(UITableViewCell*)tableView:(UITableView*)tableView cellForRowAtIndexPath:(NSIndexPath*)ipath {
   UITableViewCell* cell=[tableView dequeueReusableCellWithIdentifier:@"Cell"];
-  VT100Row* rowView;
-  if(cell){rowView=(VT100Row*)cell.backgroundView;}
+  MTRowView* rowView;
+  if(cell){rowView=(MTRowView*)cell.backgroundView;}
   else {
     cell=[[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
      reuseIdentifier:@"Cell"] autorelease];
-    cell.backgroundView=rowView=[[[VT100Row alloc] initWithBackgroundColor:bgDefault
+    cell.backgroundView=rowView=[[[MTRowView alloc] initWithBackgroundColor:bgDefault
      ascent:glyphAscent height:glyphHeight midY:glyphMidY] autorelease];
   }
   CFIndex length,cursorColumn;
@@ -471,7 +469,7 @@ static enum {
       else {
         if(bgcolor) CFAttributedStringSetAttribute(
          string,CFRangeMake(i-bgcspan,bgcspan),
-         kVTBackgroundColorAttributeName,bgcolor);
+         kMTBackgroundColorAttributeName,bgcolor);
         bgcolor=bgc;
         bgcspan=1;
       }
@@ -487,7 +485,7 @@ static enum {
       else {
         if(stcolor) CFAttributedStringSetAttribute(
          string,CFRangeMake(i-stcspan,stcspan),
-         kVTStrikethroughColorAttributeName,stcolor);
+         kMTStrikethroughColorAttributeName,stcolor);
         stcolor=stc;
         stcspan=1;
       }
@@ -515,16 +513,14 @@ static enum {
   return cell;
 }
 -(void)handleKeyboardGesture:(UIGestureRecognizer*)gesture {
-  if(gesture.state==UIGestureRecognizerStateBegan){
-    if(self.isFirstResponder){[self resignFirstResponder];}
-    else {[self becomeFirstResponder];}
-  }
+  if(gesture.state==UIGestureRecognizerStateBegan)
+    [self.isFirstResponder?self.view:self becomeFirstResponder];
 }
 -(void)handleZoneGesture:(UIGestureRecognizer*)gesture {
   UIKeyboardImpl* keyboard=[UIKeyboardImpl sharedInstance];
   BOOL shift=keyboard.isShifted;
   NSData* kbdata;
-  switch($_tapZone(self.tableView,gesture)){
+  switch($_tapZone(gesture)){
     case kTapZoneTopLeft:kbdata=kbInsert;break;
     case kTapZoneTopRight:kbdata=kbDelete;break;
     case kTapZoneBottomLeft:kbdata=kbEscape;break;
@@ -533,7 +529,10 @@ static enum {
     case kTapZoneBottom:kbdata=shift?kbPageDown:kbDown[vt100.bDECCKM];break;
     case kTapZoneLeft:kbdata=shift?kbHome[vt100.bDECCKM]:kbLeft[vt100.bDECCKM];break;
     case kTapZoneRight:kbdata=shift?kbEnd[vt100.bDECCKM]:kbRight[vt100.bDECCKM];break;
-    default:return;
+    default:
+      [[UIMenuController sharedMenuController]
+       setMenuVisible:NO animated:YES];
+      return;
   }
   [self sendData:kbdata];
   if(shift && !keyboard.isShiftLocked){[keyboard setShift:NO];}
@@ -542,20 +541,19 @@ static enum {
   if(gesture.state==UIGestureRecognizerStateBegan){
     if(repeatTimer){return;}
     NSData* kbdata;
-    UITableView* tableView=self.tableView;
-    switch($_tapZone(tableView,gesture)){
+    switch($_tapZone(gesture)){
       case kTapZoneTop:kbdata=kbUp[vt100.bDECCKM];break;
       case kTapZoneBottom:kbdata=kbDown[vt100.bDECCKM];break;
       case kTapZoneLeft:kbdata=kbLeft[vt100.bDECCKM];break;
       case kTapZoneRight:kbdata=kbRight[vt100.bDECCKM];break;
-      case kTapZoneCenter:
-        if([self becomeFirstResponder]){
-          ctrlLock=NO;
-          UIMenuController* menu=[UIMenuController sharedMenuController];
-          [menu setTargetRect:(CGRect){
-           .origin=[gesture locationInView:tableView]} inView:tableView];
-          [menu setMenuVisible:YES animated:YES];
-        }
+      case kTapZoneCenter:{
+        ctrlLock=NO;
+        UIMenuController* menu=[UIMenuController sharedMenuController];
+        UIView* view=gesture.view;
+        [menu setTargetRect:(CGRect){
+         .origin=[gesture locationInView:view]} inView:view];
+        [menu setMenuVisible:YES animated:YES];
+      }
       default:return;
     }
     repeatTimer=[[NSTimer scheduledTimerWithTimeInterval:0.1
@@ -572,12 +570,19 @@ static enum {
 -(void)repeatTimerFired:(NSTimer*)timer {
   [self sendData:timer.userInfo];
 }
--(BOOL)canPerformAction:(SEL)action withSender:(id)sender {
-  if(!self.isFirstResponder){return NO;}
-  return action==@selector(select:) || action==@selector(paste:)
-   || (!ctrlLock && action==@selector(ctrlLock:));
+-(BOOL)canPerformAction:(SEL)action withSender:(UIMenuController*)menu {
+  BOOL cantype=self.isFirstResponder;
+  if(!cantype && !self.view.isFirstResponder){return NO;}
+  return action==@selector(paste:) || action==@selector(reflow:)
+   || (cantype && !ctrlLock && action==@selector(ctrlLock:));
 }
--(void)select:(id)sender {
+-(void)paste:(UIMenuController*)menu {
+  UIPasteboard* pb=[UIPasteboard generalPasteboard];
+  if([pb containsPasteboardTypes:UIPasteboardTypeListString]){
+    [self sendData:[pb dataForPasteboardType:@"public.text"]];
+  }
+}
+-(void)reflow:(UIMenuController*)menu {
   NSMutableString* content=[NSMutableString string];
   CFIndex count=vt100.numberOfLines,i,blankspan=0;
   for (i=0;i<count;i++){
@@ -615,24 +620,20 @@ static enum {
   [self presentViewController:nav animated:YES completion:NULL];
   [nav release];
 }
--(void)paste:(id)sender {
-  UIPasteboard* pb=[UIPasteboard generalPasteboard];
-  if([pb containsPasteboardTypes:UIPasteboardTypeListString]){
-    [self sendData:[pb dataForPasteboardType:@"public.text"]];
-  }
-}
--(void)ctrlLock:(id)sender {
-  UIMenuController* menu=[UIMenuController sharedMenuController];
+-(void)ctrlLock:(UIMenuController*)menu {
   ctrlLock=menu.menuVisible=YES;
   [menu update];
 }
--(void)viewDidLoad {
-  UITableView* tableView=self.tableView;
-  tableView.indicatorStyle=UIScrollViewIndicatorStyleWhite;
-  tableView.backgroundColor=[UIColor colorWithCGColor:bgDefault];
+-(void)loadView {
+  UITableView* tableView=[[MTRespondingTableView alloc]
+   initWithFrame:CGRectMake(0,0,0,0) style:UITableViewStylePlain];
   tableView.allowsSelection=NO;
+  tableView.backgroundColor=[UIColor colorWithCGColor:bgDefault];
+  tableView.indicatorStyle=UIScrollViewIndicatorStyleWhite;
   tableView.separatorStyle=UITableViewCellSeparatorStyleNone;
   tableView.rowHeight=rowHeight;
+  tableView.dataSource=self;
+  // install gesture recognizers
   UILongPressGestureRecognizer* kbGesture=[[UILongPressGestureRecognizer alloc]
    initWithTarget:self action:@selector(handleKeyboardGesture:)];
   kbGesture.numberOfTouchesRequired=2;
@@ -647,23 +648,19 @@ static enum {
   repeatGesture.minimumPressDuration=0.25;
   [tableView addGestureRecognizer:repeatGesture];
   [repeatGesture release];
-  UIMenuItem* item=[[UIMenuItem alloc]
+  [self.view=tableView release];
+  // add custom edit menu items
+  UIMenuItem* reflowitem=[[UIMenuItem alloc]
+   initWithTitle:@"\u2630" action:@selector(reflow:)];
+  UIMenuItem* ctrlitem=[[UIMenuItem alloc]
    initWithTitle:@"Ctrl Lock" action:@selector(ctrlLock:)];
   [UIMenuController sharedMenuController].menuItems=[NSArray
-   arrayWithObject:item];
-  [item release];
-}
--(BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)orientation {
-  return orientation==UIInterfaceOrientationPortrait
-   || orientation==UIInterfaceOrientationLandscapeLeft
-   || orientation==UIInterfaceOrientationLandscapeRight;
-}
--(void)didRotateFromInterfaceOrientation:(UIInterfaceOrientation)orientation {
-  if(!self.isFirstResponder){[self updateScreenSize];}
+   arrayWithObjects:reflowitem,ctrlitem,nil];
+  [reflowitem release];
+  [ctrlitem release];
 }
 -(void)dealloc {
   [self stopSubProcess:NULL];
-  [[NSNotificationCenter defaultCenter] removeObserver:self];
   [kbUp[0] release];
   [kbDown[0] release];
   [kbRight[0] release];
