@@ -1,9 +1,7 @@
 #include "MTController.h"
 #include "MTRowView.h"
 #include "MTScratchpad.h"
-#include "VT100.h"
-#include <sys/ioctl.h>
-#include <util.h>
+#import "VT100.h"
 
 @interface UIKeyboardImpl
 +(id)sharedInstance;
@@ -35,22 +33,31 @@ static enum {
   kTapZoneBottomLeft,
   kTapZoneBottom,
   kTapZoneBottomRight,
-} $_tapZone(UIGestureRecognizer* gesture) {
+} $_tapZone(UIGestureRecognizer* gesture,CGPoint* optr) {
   UIScrollView* view=(UIScrollView*)gesture.view;
   CGPoint origin=[gesture locationInView:view];
+  if(optr){*optr=origin;}
   CGPoint offset=view.contentOffset;
   origin.x-=offset.x;
   origin.y-=offset.y;
   CGSize size=$_screenSize(view);
-  CGFloat hmargin=size.width/5,vmargin=size.height/5;
-  if(hmargin<60){hmargin=60;}
-  if(vmargin<60){vmargin=60;}
-  BOOL right=(origin.x>size.width-hmargin);
-  return (origin.y<vmargin)?right?kTapZoneTopRight:
-   (origin.x<hmargin)?kTapZoneTopLeft:kTapZoneTop:
-   (origin.y>size.height-vmargin)?right?kTapZoneBottomRight:
-   (origin.x<hmargin)?kTapZoneBottomLeft:kTapZoneBottom:
-   right?kTapZoneRight:(origin.x<hmargin)?kTapZoneLeft:kTapZoneCenter;
+  CGFloat margin=(size.width<size.height?size.width:size.height)/5;
+  if(margin<60){margin=60;}
+  BOOL right=(origin.x>size.width-margin);
+  return (origin.y<margin)?right?kTapZoneTopRight:
+   (origin.x<margin)?kTapZoneTopLeft:kTapZoneTop:
+   (origin.y>size.height-margin)?right?kTapZoneBottomRight:
+   (origin.x<margin)?kTapZoneBottomLeft:kTapZoneBottom:
+   right?kTapZoneRight:(origin.x<margin)?kTapZoneLeft:kTapZoneCenter;
+}
+static NSString* $_getTitle(VT100* terminal) {
+  CFStringRef title=terminal.title;
+  if(title){return (NSString*)title;}
+  title=[terminal copyProcessName];
+  NSString* tstr=(title && CFStringGetLength(title))?
+   [NSString stringWithFormat:@"<%@>",title]:@"<?>";
+  if(title){CFRelease(title);}
+  return tstr;
 }
 
 @interface MTRespondingTableView : UITableView @end
@@ -61,33 +68,6 @@ static enum {
 @implementation MTController
 -(id)init {
   if((self=[super init])){
-    // set up normal cursor keys
-    kbUp[0]=[[NSData alloc] initWithBytesNoCopy:"\033[A" length:3 freeWhenDone:NO];
-    kbDown[0]=[[NSData alloc] initWithBytesNoCopy:"\033[B" length:3 freeWhenDone:NO];
-    kbRight[0]=[[NSData alloc] initWithBytesNoCopy:"\033[C" length:3 freeWhenDone:NO];
-    kbLeft[0]=[[NSData alloc] initWithBytesNoCopy:"\033[D" length:3 freeWhenDone:NO];
-    kbHome[0]=[[NSData alloc] initWithBytesNoCopy:"\033[H" length:3 freeWhenDone:NO];
-    kbEnd[0]=[[NSData alloc] initWithBytesNoCopy:"\033[F" length:3 freeWhenDone:NO];
-    // set up application cursor keys
-    kbUp[1]=[[NSData alloc] initWithBytesNoCopy:"\033OA" length:3 freeWhenDone:NO];
-    kbDown[1]=[[NSData alloc] initWithBytesNoCopy:"\033OB" length:3 freeWhenDone:NO];
-    kbRight[1]=[[NSData alloc] initWithBytesNoCopy:"\033OC" length:3 freeWhenDone:NO];
-    kbLeft[1]=[[NSData alloc] initWithBytesNoCopy:"\033OD" length:3 freeWhenDone:NO];
-    kbHome[1]=[[NSData alloc] initWithBytesNoCopy:"\033OH" length:3 freeWhenDone:NO];
-    kbEnd[1]=[[NSData alloc] initWithBytesNoCopy:"\033OF" length:3 freeWhenDone:NO];
-    // set up other PC-style function keys
-    kbInsert=[[NSData alloc] initWithBytesNoCopy:"\033[2~" length:4 freeWhenDone:NO];
-    kbDelete=[[NSData alloc] initWithBytesNoCopy:"\033[3~" length:4 freeWhenDone:NO];
-    kbPageUp=[[NSData alloc] initWithBytesNoCopy:"\033[5~" length:4 freeWhenDone:NO];
-    kbPageDown=[[NSData alloc] initWithBytesNoCopy:"\033[6~" length:4 freeWhenDone:NO];
-    // set up miscellaneous keys
-    kbTab=[[NSData alloc] initWithBytesNoCopy:"\t" length:1 freeWhenDone:NO];
-    kbEscape=[[NSData alloc] initWithBytesNoCopy:"\033" length:1 freeWhenDone:NO];
-    kbBack[0]=[[NSData alloc] initWithBytesNoCopy:"\177" length:1 freeWhenDone:NO];
-    kbBack[1]=[[NSData alloc] initWithBytesNoCopy:"\b" length:1 freeWhenDone:NO];
-    const char CRLF[]={'\r','\n'};
-    kbReturn[0]=[[NSData alloc] initWithBytesNoCopy:(char*)CRLF length:1 freeWhenDone:NO];
-    kbReturn[1]=[[NSData alloc] initWithBytesNoCopy:(char*)CRLF length:2 freeWhenDone:NO];
     // set up color palette
     NSUserDefaults* defaults=[NSUserDefaults standardUserDefaults];
     CGColorSpaceRef rgbspace=CGColorSpaceCreateDeviceRGB();
@@ -215,127 +195,66 @@ static enum {
        &bellSoundID)==kAudioServicesNoError;
       CFRelease(soundURL);
     }
+    screenSection=[[NSIndexSet alloc] initWithIndex:0];
+    allTerminals=[[NSMutableArray alloc] init];
   }
   return self;
 }
 -(BOOL)isRunning {
-  return ptyHandle?YES:NO;
-}
--(void)redrawScreen {
-  CFSetRef iset[3];
-  UITableView* tableView=(UITableView*)self.view;
-  if([vt100 copyChanges:&iset[0] deletions:&iset[1] insertions:&iset[2]]){
-    [UIView setAnimationsEnabled:NO];
-    [tableView beginUpdates];
-    unsigned int i;
-    for (i=0;i<3;i++){
-      CFIndex count=CFSetGetCount(iset[i]),j;
-      id* items=malloc(count*sizeof(id));
-      CFSetGetValues(iset[i],(const void**)items);
-      CFRelease(iset[i]);
-      for (j=0;j<count;j++){
-        items[j]=[NSIndexPath indexPathForRow:(NSUInteger)items[j] inSection:0];
-      }
-      NSArray* ipaths=[NSArray arrayWithObjects:items count:count];
-      free(items);
-      switch(i){
-        case 0:[tableView reloadRowsAtIndexPaths:ipaths
-         withRowAnimation:UITableViewRowAnimationNone];break;
-        case 1:[tableView deleteRowsAtIndexPaths:ipaths
-         withRowAnimation:UITableViewRowAnimationNone];break;
-        case 2:[tableView insertRowsAtIndexPaths:ipaths
-         withRowAnimation:UITableViewRowAnimationNone];break;
-      }
-    }
-    [tableView endUpdates];
-    [UIView setAnimationsEnabled:YES];
+  for (VT100* terminal in allTerminals){
+    if(terminal.isRunning){return YES;}
   }
-  else {[tableView reloadData];}
-  [tableView scrollToRowAtIndexPath:[NSIndexPath
-   indexPathForRow:vt100.numberOfLines-1 inSection:0]
-   atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+  return NO;
+}
+-(void)animationDidStop:(NSString*)animationID finished:(NSNumber*)finished context:(UITableView*)tableView {
+  if(animationID){
+    CGRect frame=tableView.frame;
+    frame.origin.x=0;
+    tableView.frame=frame;
+  }
+  [self terminal:activeTerminal commitChanges:NULL
+   deletions:NULL insertions:NULL];
 }
 -(void)screenSizeDidChange {
-  CGSize size=$_screenSize((UIScrollView*)self.view);
+  UITableView* tableView=(UITableView*)self.view;
+  CGSize size=$_screenSize(tableView);
   CFIndex width=size.width/colWidth;
   CFIndex height=size.height/rowHeight;
-  if(width<1 || height<1){return;}
-  if(vt100){[vt100 setWidth:width height:height];}
+  if(activeTerminal){[activeTerminal setWidth:width height:height];}
   else {
-    vt100=[[VT100 alloc] initWithWidth:width height:height];
-    vt100.encoding=kCFStringEncodingUTF8;
-    [self startSubProcess];
+    VT100* terminal=[[VT100 alloc] initWithWidth:width height:height];
+    terminal.delegate=self;
+    terminal.encoding=kCFStringEncodingUTF8;
+    [allTerminals insertObject:terminal atIndex:activeIndex];
+    [activeTerminal=terminal release];
   }
-  if(ptyHandle && ioctl(ptyHandle.fileDescriptor,TIOCSWINSZ,
-   &(struct winsize){.ws_col=width,.ws_row=height})==-1){
-    [NSException raise:@"ioctl(TIOCSWINSZ)"
-     format:@"%d: %s",errno,strerror(errno)];
+  if(previousIndex!=activeIndex){
+    CGRect frame=tableView.frame;
+    frame.origin.x=frame.size.width*(previousIndex==NSNotFound
+     || previousIndex<activeIndex?-1:1);
+    [UIView beginAnimations:@"ScreenTransition" context:tableView];
+    [UIView setAnimationDelegate:self];
+    [UIView setAnimationDidStopSelector:
+     @selector(animationDidStop:finished:context:)];
+    tableView.frame=frame;
+    [UIView commitAnimations];
+    previousIndex=activeIndex;
   }
-  [self redrawScreen];
+  else {[self animationDidStop:nil finished:nil context:tableView];}
 }
--(void)startSubProcess {
-  if(ptyHandle){return;}
-  int fd;
-  pid_t pid=forkpty(&fd,NULL,NULL,NULL);
-  if(pid==-1){
-    [NSException raise:@"forkpty"
-     format:@"%d: %s",errno,strerror(errno)];
-    return;
-  }
-  else if(pid==0){
-    if(execve("/usr/bin/login",
-     (char*[]){"login","-fp",getenv("USER")?:"mobile",NULL},
-     (char*[]){"TERM=xterm",NULL})==-1){
-      [NSException raise:@"execve(login)"
-       format:@"%d: %s",errno,strerror(errno)];
+-(void)actionSheet:(UIActionSheet*)sheet clickedButtonAtIndex:(NSInteger)index {
+  if(index==sheet.cancelButtonIndex){return;}
+  NSUInteger count=allTerminals.count;
+  if(index==sheet.destructiveButtonIndex){
+    [allTerminals removeObjectAtIndex:index=activeIndex];
+    if(--count){
+      if(index==count){index--;}
+      else {previousIndex=NSNotFound;}
     }
-    return;
   }
-  ptyHandle=[[NSFileHandle alloc] initWithFileDescriptor:fd closeOnDealloc:YES];
-  ptypid=pid;
-  [[NSNotificationCenter defaultCenter]
-   addObserver:self selector:@selector(dataAvailable:)
-   name:NSFileHandleReadCompletionNotification object:ptyHandle];
-  [ptyHandle readInBackgroundAndNotify];
-}
--(void)stopSubProcess:(int*)status {
-  if(!ptyHandle){return;}
-  [[NSNotificationCenter defaultCenter] removeObserver:self
-   name:NSFileHandleReadCompletionNotification object:ptyHandle];
-  kill(ptypid,SIGKILL);
-  waitpid(ptypid,status,WUNTRACED);
-  [ptyHandle release];
-  ptyHandle=nil;
-}
--(void)dataAvailable:(NSNotification*)note {
-  NSData* input=[note.userInfo objectForKey:NSFileHandleNotificationDataItem];
-  if(!input.length){
-    int status=0;
-    [self stopSubProcess:&status];
-    input=[[NSString stringWithFormat:@"\033[m[Exit %d]\r\n\033[1m"
-     "Press any key to restart.",WIFEXITED(status)?WEXITSTATUS(status):-1]
-     dataUsingEncoding:NSASCIIStringEncoding];
-  }
-  BOOL bell=NO;
-  NSMutableData* output=[NSMutableData dataWithLength:0];
-  [vt100 processInput:input output:output bell:&bell];
-  if(output.length){[ptyHandle writeData:output];}
-  if(bell && bellSound){AudioServicesPlaySystemSound(bellSoundID);}
-  [self redrawScreen];
-  [ptyHandle readInBackgroundAndNotify];
-}
--(void)sendData:(NSData*)data {
-  if(!ctrlLock){
-    [[UIMenuController sharedMenuController]
-     setMenuVisible:NO animated:YES];
-  }
-  if(ptyHandle){[ptyHandle writeData:data];}
-  else {
-    // restart the subprocess
-    [vt100 resetTerminal];
-    [self startSubProcess];
-    [self screenSizeDidChange];
-  }
+  activeIndex=index;
+  activeTerminal=(index<count)?[allTerminals objectAtIndex:index]:nil;
+  [self screenSizeDidChange];
 }
 -(BOOL)canBecomeFirstResponder {
   return YES;
@@ -356,35 +275,36 @@ static enum {
   return YES;// always enable the backspace key
 }
 -(void)deleteBackward {
-  [self sendData:kbBack[vt100.bDECBKM]];
+  [activeTerminal sendKey:kVT100KeyBackArrow];
+  if(!ctrlLock){
+    [[UIMenuController sharedMenuController]
+     setMenuVisible:NO animated:YES];
+  }
 }
 -(void)insertText:(NSString*)text {
+  VT100Key key=0;
   if(text.length==1){
     unichar c=[text characterAtIndex:0];
-    if(c=='\n'){
-      // send CR or CRLF
-      [self sendData:kbReturn[vt100.bLNM]];
-      return;
-    }
-    if([UIMenuController sharedMenuController].menuVisible){
-      // send Control+(A..Z)
-      if(c>0x40 && c<0x5b){c-=0x40;}
-      else if(c>0x60 && c<0x7b){c-=0x60;}
-    }
-    if(c<0x80){
-      // send an ASCII character
-      [self sendData:[NSData dataWithBytes:(char[]){c} length:1]];
-      return;
+    switch([UIMenuController sharedMenuController].menuVisible){
+      case YES:// send Control+(A..Z)
+        if(c>0x40 && c<0x5b){key=c-0x40;break;}
+        else if(c>0x60 && c<0x7b){key=c-0x60;break;}
+      default:
+        if(c<0x80){key=c;}
     }
   }
-  // send an encoded string
-  [self sendData:[text dataUsingEncoding:NSUTF8StringEncoding]];
+  if(key){[activeTerminal sendKey:key];}
+  else {[activeTerminal sendString:(CFStringRef)text];}
+  if(!ctrlLock){
+    [[UIMenuController sharedMenuController]
+     setMenuVisible:NO animated:YES];
+  }
 }
 -(NSInteger)numberOfSectionsInTableView:(UITableView*)tableView {
   return 1;
 }
 -(NSInteger)tableView:(UITableView*)tableView numberOfRowsInSection:(NSInteger)section {
-  return vt100.numberOfLines;
+  return activeTerminal.numberOfLines;
 }
 -(UITableViewCell*)tableView:(UITableView*)tableView cellForRowAtIndexPath:(NSIndexPath*)ipath {
   UITableViewCell* cell=[tableView dequeueReusableCellWithIdentifier:@"Cell"];
@@ -397,7 +317,7 @@ static enum {
      ascent:glyphAscent height:glyphHeight midY:glyphMidY] autorelease];
   }
   CFIndex length,cursorColumn;
-  screen_char_t* ptr=[vt100 charactersAtLineIndex:ipath.row
+  screen_char_t* ptr=[activeTerminal charactersAtLineIndex:ipath.row
    length:&length cursorColumn:&cursorColumn];
   if(ptr){
     unichar* ucbuf=malloc(length*sizeof(unichar));
@@ -516,49 +436,87 @@ static enum {
   if(gesture.state==UIGestureRecognizerStateBegan)
     [self.isFirstResponder?self.view:self becomeFirstResponder];
 }
--(void)handleZoneGesture:(UIGestureRecognizer*)gesture {
+-(void)handleSwipeGesture:(UISwipeGestureRecognizer*)gesture {
+  switch(gesture.direction){
+    case UISwipeGestureRecognizerDirectionRight:
+      if(activeIndex==0){return;}
+      activeIndex--;
+      break;
+    case UISwipeGestureRecognizerDirectionLeft:
+      if(activeIndex==allTerminals.count-1){return;}
+      activeIndex++;
+      break;
+    default:return;
+  }
+  activeTerminal=[allTerminals objectAtIndex:activeIndex];
+  [self screenSizeDidChange];
+}
+-(void)handleTapGesture:(UIGestureRecognizer*)gesture {
+  if(!activeTerminal){return;}
+  [[UIMenuController sharedMenuController] setMenuVisible:NO animated:YES];
   UIKeyboardImpl* keyboard=[UIKeyboardImpl sharedInstance];
   BOOL shift=keyboard.isShifted;
-  NSData* kbdata;
-  switch($_tapZone(gesture)){
-    case kTapZoneTopLeft:kbdata=kbInsert;break;
-    case kTapZoneTopRight:kbdata=kbDelete;break;
-    case kTapZoneBottomLeft:kbdata=kbEscape;break;
-    case kTapZoneBottomRight:kbdata=kbTab;break;
-    case kTapZoneTop:kbdata=shift?kbPageUp:kbUp[vt100.bDECCKM];break;
-    case kTapZoneBottom:kbdata=shift?kbPageDown:kbDown[vt100.bDECCKM];break;
-    case kTapZoneLeft:kbdata=shift?kbHome[vt100.bDECCKM]:kbLeft[vt100.bDECCKM];break;
-    case kTapZoneRight:kbdata=shift?kbEnd[vt100.bDECCKM]:kbRight[vt100.bDECCKM];break;
-    default:
-      [[UIMenuController sharedMenuController]
-       setMenuVisible:NO animated:YES];
-      return;
+  VT100Key key;
+  switch($_tapZone(gesture,NULL)){
+    case kTapZoneTop:key=shift?kVT100KeyPageUp:kVT100KeyUpArrow;break;
+    case kTapZoneBottom:key=shift?kVT100KeyPageDown:kVT100KeyDownArrow;break;
+    case kTapZoneLeft:key=shift?kVT100KeyHome:kVT100KeyLeftArrow;break;
+    case kTapZoneRight:key=shift?kVT100KeyEnd:kVT100KeyRightArrow;break;
+    case kTapZoneTopLeft:key=kVT100KeyInsert;break;
+    case kTapZoneTopRight:key=kVT100KeyDelete;break;
+    case kTapZoneBottomLeft:key=kVT100KeyEsc;break;
+    case kTapZoneBottomRight:key=kVT100KeyTab;break;
+    default:return;
   }
-  [self sendData:kbdata];
+  [activeTerminal sendKey:key];
   if(shift && !keyboard.isShiftLocked){[keyboard setShift:NO];}
 }
--(void)handleRepeatGesture:(UIGestureRecognizer*)gesture {
+-(void)handleHoldGesture:(UIGestureRecognizer*)gesture {
+  if(!activeTerminal){return;}
   if(gesture.state==UIGestureRecognizerStateBegan){
     if(repeatTimer){return;}
-    NSData* kbdata;
-    switch($_tapZone(gesture)){
-      case kTapZoneTop:kbdata=kbUp[vt100.bDECCKM];break;
-      case kTapZoneBottom:kbdata=kbDown[vt100.bDECCKM];break;
-      case kTapZoneLeft:kbdata=kbLeft[vt100.bDECCKM];break;
-      case kTapZoneRight:kbdata=kbRight[vt100.bDECCKM];break;
-      case kTapZoneCenter:{
-        ctrlLock=NO;
-        UIMenuController* menu=[UIMenuController sharedMenuController];
-        UIView* view=gesture.view;
-        [menu setTargetRect:(CGRect){
-         .origin=[gesture locationInView:view]} inView:view];
-        [menu setMenuVisible:YES animated:YES];
+    UIMenuController* menu=[UIMenuController sharedMenuController];
+    [menu setMenuVisible:NO animated:YES];
+    VT100Key key;
+    CGPoint origin;
+    switch($_tapZone(gesture,&origin)){
+      case kTapZoneTop:key=kVT100KeyUpArrow;break;
+      case kTapZoneBottom:key=kVT100KeyDownArrow;break;
+      case kTapZoneLeft:key=kVT100KeyLeftArrow;break;
+      case kTapZoneRight:key=kVT100KeyRightArrow;break;
+      case kTapZoneTopRight:{
+        UIActionSheet* sheet=[[UIActionSheet alloc]
+         initWithTitle:nil delegate:self cancelButtonTitle:@"Cancel"
+         destructiveButtonTitle:activeTerminal.isRunning?
+         @"Force Quit":@"Close Window" otherButtonTitles:nil];
+        [sheet showInView:gesture.view];
+        [sheet release];
+        return;
       }
+      case kTapZoneBottomRight:{
+        UIActionSheet* sheet=[[UIActionSheet alloc]
+         initWithTitle:nil delegate:self cancelButtonTitle:nil
+         destructiveButtonTitle:nil otherButtonTitles:nil];
+        for (VT100* terminal in allTerminals){
+          [sheet addButtonWithTitle:[NSString stringWithFormat:@"%@%d: %@",
+           (terminal==activeTerminal)?@"\u2713 ":terminal.bBell?@"\u2407 ":@"",
+           terminal.processID,$_getTitle(terminal)]];
+        }
+        [sheet addButtonWithTitle:@"(+)"];
+        sheet.cancelButtonIndex=[sheet addButtonWithTitle:@"Cancel"];
+        [sheet showInView:gesture.view];
+        [sheet release];
+        return;
+      }
+      case kTapZoneCenter:
+        ctrlLock=NO;
+        [menu setTargetRect:(CGRect){.origin=origin} inView:gesture.view];
+        [menu setMenuVisible:YES animated:YES];
       default:return;
     }
     repeatTimer=[[NSTimer scheduledTimerWithTimeInterval:0.1
      target:self selector:@selector(repeatTimerFired:)
-     userInfo:kbdata repeats:YES] retain];
+     userInfo:[NSNumber numberWithInt:key] repeats:YES] retain];
   }
   else if(gesture.state==UIGestureRecognizerStateEnded){
     if(!repeatTimer){return;}
@@ -568,7 +526,7 @@ static enum {
   }
 }
 -(void)repeatTimerFired:(NSTimer*)timer {
-  [self sendData:timer.userInfo];
+  [activeTerminal sendKey:[timer.userInfo intValue]];
 }
 -(BOOL)canPerformAction:(SEL)action withSender:(UIMenuController*)menu {
   BOOL cantype=self.isFirstResponder;
@@ -579,15 +537,16 @@ static enum {
 -(void)paste:(UIMenuController*)menu {
   UIPasteboard* pb=[UIPasteboard generalPasteboard];
   if([pb containsPasteboardTypes:UIPasteboardTypeListString]){
-    [self sendData:[pb dataForPasteboardType:@"public.text"]];
+    [activeTerminal sendString:(CFStringRef)pb.string];
   }
 }
 -(void)reflow:(UIMenuController*)menu {
   NSMutableString* content=[NSMutableString string];
-  CFIndex count=vt100.numberOfLines,i,blankspan=0;
+  CFIndex count=activeTerminal.numberOfLines,i,blankspan=0;
   for (i=0;i<count;i++){
     CFIndex length,j;
-    screen_char_t* ptr=[vt100 charactersAtLineIndex:i length:&length cursorColumn:NULL];
+    screen_char_t* ptr=[activeTerminal
+     charactersAtLineIndex:i length:&length cursorColumn:NULL];
     while(length && !ptr[length-1].c){length--;}
     if(i && !ptr->wrapped){
       [content appendString:@"\n"];
@@ -608,7 +567,7 @@ static enum {
   }
   CFStringRef fontName=CTFontCopyFullName(ctFont);
   MTScratchpad* scratch=[[MTScratchpad alloc]
-   initWithTitle:[NSString stringWithFormat:@"PID %d",ptypid] content:content
+   initWithTitle:$_getTitle(activeTerminal) content:content
    font:[UIFont fontWithName:(NSString*)fontName size:CTFontGetSize(ctFont)]
    bgColor:[UIColor colorWithCGColor:bgDefault]
    fgColor:[UIColor colorWithCGColor:fgDefault]];
@@ -639,15 +598,26 @@ static enum {
   kbGesture.numberOfTouchesRequired=2;
   [tableView addGestureRecognizer:kbGesture];
   [kbGesture release];
-  UITapGestureRecognizer* zoneGesture=[[UITapGestureRecognizer alloc]
-   initWithTarget:self action:@selector(handleZoneGesture:)];
-  [tableView addGestureRecognizer:zoneGesture];
-  [zoneGesture release];
-  UILongPressGestureRecognizer* repeatGesture=[[UILongPressGestureRecognizer alloc]
-   initWithTarget:self action:@selector(handleRepeatGesture:)];
-  repeatGesture.minimumPressDuration=0.25;
-  [tableView addGestureRecognizer:repeatGesture];
-  [repeatGesture release];
+  UISwipeGestureRecognizer* swipeGesture;
+  swipeGesture=[[UISwipeGestureRecognizer alloc]
+   initWithTarget:self action:@selector(handleSwipeGesture:)];
+  swipeGesture.direction=UISwipeGestureRecognizerDirectionLeft;
+  [tableView addGestureRecognizer:swipeGesture];
+  [swipeGesture release];
+  swipeGesture=[[UISwipeGestureRecognizer alloc]
+   initWithTarget:self action:@selector(handleSwipeGesture:)];
+  swipeGesture.direction=UISwipeGestureRecognizerDirectionRight;
+  [tableView addGestureRecognizer:swipeGesture];
+  [swipeGesture release];
+  UITapGestureRecognizer* tapGesture=[[UITapGestureRecognizer alloc]
+   initWithTarget:self action:@selector(handleTapGesture:)];
+  [tableView addGestureRecognizer:tapGesture];
+  [tapGesture release];
+  UILongPressGestureRecognizer* holdGesture=[[UILongPressGestureRecognizer alloc]
+   initWithTarget:self action:@selector(handleHoldGesture:)];
+  holdGesture.minimumPressDuration=0.25;
+  [tableView addGestureRecognizer:holdGesture];
+  [holdGesture release];
   [self.view=tableView release];
   // add custom edit menu items
   UIMenuItem* reflowitem=[[UIMenuItem alloc]
@@ -659,30 +629,49 @@ static enum {
   [reflowitem release];
   [ctrlitem release];
 }
+-(Boolean)terminal:(VT100*)terminal commitChanges:(CFSetRef)changes deletions:(CFSetRef)deletions insertions:(CFSetRef)insertions {
+  if(terminal!=activeTerminal){return false;}
+  if(terminal.bBell){
+    if(bellSound){AudioServicesPlaySystemSound(bellSoundID);}
+    [terminal resetBell];
+  }
+  UITableView* tableView=(UITableView*)self.view;
+  [UIView setAnimationsEnabled:NO];
+  if(changes){
+    [tableView beginUpdates];
+    unsigned int i;
+    for (i=0;i<3;i++){
+      CFSetRef iset=(i==0)?changes:(i==1)?deletions:insertions;
+      CFIndex count=CFSetGetCount(iset),j;
+      id* items=malloc(count*sizeof(id));
+      CFSetGetValues(iset,(const void**)items);
+      for (j=0;j<count;j++){
+        items[j]=[NSIndexPath indexPathForRow:(NSUInteger)items[j] inSection:0];
+      }
+      NSArray* ipaths=[NSArray arrayWithObjects:items count:count];
+      free(items);
+      switch(i){
+        case 0:[tableView reloadRowsAtIndexPaths:ipaths
+         withRowAnimation:UITableViewRowAnimationNone];break;
+        case 1:[tableView deleteRowsAtIndexPaths:ipaths
+         withRowAnimation:UITableViewRowAnimationNone];break;
+        case 2:[tableView insertRowsAtIndexPaths:ipaths
+         withRowAnimation:UITableViewRowAnimationNone];break;
+      }
+    }
+    [tableView endUpdates];
+  }
+  else {
+    [tableView reloadSections:screenSection
+     withRowAnimation:UITableViewRowAnimationNone];
+  }
+  [UIView setAnimationsEnabled:YES];
+  [tableView scrollToRowAtIndexPath:
+   [NSIndexPath indexPathForRow:terminal.numberOfLines-1 inSection:0]
+   atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+  return true;
+}
 -(void)dealloc {
-  [self stopSubProcess:NULL];
-  [kbUp[0] release];
-  [kbDown[0] release];
-  [kbRight[0] release];
-  [kbLeft[0] release];
-  [kbHome[0] release];
-  [kbEnd[0] release];
-  [kbUp[1] release];
-  [kbDown[1] release];
-  [kbRight[1] release];
-  [kbLeft[1] release];
-  [kbHome[1] release];
-  [kbEnd[1] release];
-  [kbInsert release];
-  [kbDelete release];
-  [kbPageUp release];
-  [kbPageDown release];
-  [kbTab release];
-  [kbEscape release];
-  [kbBack[0] release];
-  [kbBack[1] release];
-  [kbReturn[0] release];
-  [kbReturn[1] release];
   unsigned int i;
   for (i=0;i<256;i++){CFRelease(colorTable[i]);}
   CFRelease(nullColor);
@@ -698,8 +687,9 @@ static enum {
   CFRelease(ctUnderlineStyleSingle);
   CFRelease(ctUnderlineStyleDouble);
   if(bellSound){AudioServicesDisposeSystemSoundID(bellSoundID);}
-  [vt100 release];
   [repeatTimer release];
+  [screenSection release];
+  [allTerminals release];
   [super dealloc];
 }
 @end

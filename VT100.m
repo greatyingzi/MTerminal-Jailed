@@ -1,38 +1,23 @@
 #include "VT100.h"
+@interface VT100 (Private)
+-(void)ptyEvent:(CFOptionFlags)events;
+-(void)ptyInit;
+-(void)ptyReset;
+@end
 #include <libkern/OSAtomic.h>
+#include <sys/ioctl.h>
+#include <sys/sysctl.h>
+#include <util.h>
 
-#define TAB_WIDTH 8
+const char $DA[]="\033[?1;2c";
+const char $DA2[]="\033[>61;20;1c";
+const char $DA3[]="\033P!|0\033\\";
+const char $DSR[]="\033[0n";
+const char $DECREPTPARM0[]="\033[2;1;1;120;120;1;0x";
+const char $DECREPTPARM1[]="\033[3x";
 
-#define VT100_DA "\033[?1;2c"
-#define VT100_DA2 "\033[>61;20;1c"
-#define VT100_DSR "\033[0n"
-#define VT100_CPR "\033[%ld;%ldR"
-#define VT100_DECREPTPARM0 "\033[2;1;1;120;120;1;0x"
-#define VT100_DECREPTPARM1 "\033[3x"
-
-//#define DEBUG_CHANGES
-#ifdef DEBUG_CHANGES
-static NSString* $_dSet(CFSetRef set) {
-  CFIndex count=CFSetGetCount(set),i;
-  CFIndex* items=malloc(count*sizeof(CFIndex));
-  CFSetGetValues(set,(const void**)items);
-  NSMutableString* str=[NSMutableString string];
-  for (i=0;i<count;i++){[str appendFormat:@"%s%ld",i?",":"",items[i]];}
-  free(items);
-  return str;
-}
-static NSString* $_dArray(CFArrayRef array) {
-  CFIndex count=CFArrayGetCount(array),i;
-  NSMutableString* str=[NSMutableString string];
-  for (i=0;i<count;i++){
-    [str appendFormat:@"%s%ld:%ld",i?",":"",i,
-     (CFIndex)CFArrayGetValueAtIndex(array,i)];
-  }
-  return str;
-}
-#endif
-
-const unichar charmap_graphics[128]={
+const CFIndex $tabWidth=8;
+const unichar $charsetGraphics[128]={
   0x0000,0x0001,0x0002,0x0003,0x0004,0x0005,0x0006,0x0007,
   0x0008,0x0009,0x000a,0x000b,0x000c,0x000d,0x000e,0x000f,
   0x0010,0x0011,0x0012,0x0013,0x0014,0x0015,0x0016,0x0017,
@@ -51,6 +36,9 @@ const unichar charmap_graphics[128]={
   0x2502,0x2264,0x2265,0x03c0,0x2260,0x00a3,0x00b7,0x007f,
 };
 
+static void ptyref_callback(CFFileDescriptorRef ptyref,CFOptionFlags events,void* info) {
+  [(VT100*)info ptyEvent:events];
+}
 static screen_line_t* screen_line_create(size_t size) {
   screen_line_t* line=calloc(1,sizeof(screen_line_t)+size);
   line->retain_count=1;
@@ -66,11 +54,9 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
 }
 
 @implementation VT100
-@synthesize encoding;
-@synthesize bDECBKM,bDECCKM,bLNM;
+@synthesize delegate,encoding,title,processID,bBell;
 -(id)initWithWidth:(CFIndex)_screenWidth height:(CFIndex)_screenHeight {
   if((self=[super init])){
-    CSIParams=CFArrayCreateMutable(NULL,0,NULL);
     encoding=kCFStringEncodingASCII;
     screenWidth=_screenWidth;
     screenHeight=_screenHeight;
@@ -80,105 +66,12 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
      .release=(CFArrayReleaseCallBack)screen_line_release});
     indexMap=CFArrayCreateMutable(NULL,0,NULL);
     linesChanged=CFSetCreateMutable(NULL,0,NULL);
-    [self resetTerminal];
+    [self ptyInit];
   }
   return self;
 }
--(void)resetTerminal {
-  bDECBKM=false;// send delete on backarrow
-  bDECCKM=false;// send normal cursor keys
-  bDECOM=false;// disable origin mode
-  bDECAWM=true;// enable auto-wrapping
-  bDECTCEM=true;// show the cursor
-  bIRM=false;// disable insert mode
-  bLNM=false;// send CR on enter
-  bPastEOL=false;// cursor is not past end of line
-  currentIndex=cursorX=cursorY=0;
-  windowTop=0;
-  windowBottom=screenHeight-1;
-  memset(&nullChar,0,sizeof(nullChar));
-  CFIndex i;
-  // reset tab stops
-  for (i=0;i<screenWidth;i++){tabstops[i]=((i%TAB_WIDTH)==0);}
-  // reset line buffer
-  bRedrawAll=true;
-  CFArrayRemoveAllValues(lineBuffer);
-  size_t size=screenWidth*sizeof(screen_char_t);
-  for (i=0;i<screenHeight;i++){
-    screen_line_t* newline=screen_line_create(size);
-    if(i==cursorY){currentLine=newline;}
-    CFArrayAppendValue(lineBuffer,newline);
-    screen_line_release(NULL,newline);
-  }
-}
--(Boolean)copyChanges:(CFSetRef*)changes deletions:(CFSetRef*)deletions insertions:(CFSetRef*)insertions {
-  Boolean didcopy;
-  CFIndex count=CFArrayGetCount(indexMap),i;
-  if(bRedrawAll){bRedrawAll=didcopy=false;}
-  else {
-#ifdef DEBUG_CHANGES
-    NSLog(@"START linesChanged=(%@) prevIndex=%ld currentIndex=%ld\n"
-     "screenHeight=%ld indexTop=%ld indexMap=[%@]\n",
-     $_dSet(linesChanged),prevIndex,currentIndex,
-     screenHeight,indexTop,$_dArray(indexMap));
-#endif
-    CFMutableSetRef mdeletions=CFSetCreateMutable(NULL,count,NULL);
-    CFMutableSetRef minsertions=CFSetCreateMutable(NULL,count,NULL);
-    CFIndex index=indexTop,lastindex=index,cindex=-1,newspan=0;
-    for (i=0;i<=count;i++,index++){
-      CFIndex j=(i==count)?screenHeight:
-       (CFIndex)CFArrayGetValueAtIndex(indexMap,i);
-      if(j==-1){
-        CFSetAddValue(minsertions,(void*)index);
-        newspan++;
-      }
-      else {
-        CFIndex newindex=index-i+j;
-        while(lastindex<newindex){
-          if(newspan>0){
-            CFSetRemoveValue(minsertions,(void*)lastindex);
-            CFSetAddValue(linesChanged,(void*)lastindex);
-            newspan--;
-          }
-          else {
-            CFSetRemoveValue(linesChanged,(void*)lastindex);
-            CFSetAddValue(mdeletions,(void*)lastindex);
-          }
-          lastindex++;
-        }
-        if(prevIndex==lastindex
-         && ((cindex=index)!=currentIndex || prevColumn!=cursorX)){
-          // erase cursor at previous position
-          CFSetAddValue(linesChanged,(void*)lastindex);
-        }
-        lastindex++;
-        newspan=0;
-      }
-    }
-    if(bDECTCEM && (cindex!=currentIndex || prevColumn!=cursorX)){
-      // redraw cursor at current position
-      [self changedLineAtIndex:currentIndex];
-    }
-    prevIndex=bDECTCEM?currentIndex:-1;
-    prevColumn=bDECTCEM?cursorX:-1;
-#ifdef DEBUG_CHANGES
-    NSLog(@"END linesChanged=(%@) mdeletions=(%@) minsertions=(%@)",
-     $_dSet(linesChanged),$_dSet(mdeletions),$_dSet(minsertions));
-#endif
-    *changes=CFSetCreateCopy(NULL,linesChanged);
-    *deletions=mdeletions;
-    *insertions=minsertions;
-    didcopy=true;
-  }
-  // reset change tracking state
-  CFSetRemoveAllValues(linesChanged);
-  indexTop=CFArrayGetCount(lineBuffer)-screenHeight;
-  CFIndex* list=malloc(screenHeight*sizeof(CFIndex));
-  for (i=0;i<screenHeight;i++){list[i]=i;}
-  CFArrayReplaceValues(indexMap,CFRangeMake(0,count),
-   (const void**)list,screenHeight);
-  free(list);
-  return didcopy;
+-(CFIndex)numberOfLines {
+  return CFArrayGetCount(lineBuffer);
 }
 -(screen_char_t*)charactersAtLineIndex:(CFIndex)index length:(CFIndex*)length cursorColumn:(CFIndex*)cursorColumn {
   if(index<0 || index>=CFArrayGetCount(lineBuffer)){return NULL;}
@@ -187,8 +80,144 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   if(cursorColumn){*cursorColumn=(bDECTCEM && line==currentLine)?cursorX:-1;}
   return line->buf;
 }
--(CFIndex)numberOfLines {
-  return CFArrayGetCount(lineBuffer);
+-(CFStringRef)copyProcessName {
+  if(ptyref){
+    struct kinfo_proc kp;
+    size_t kpsize=sizeof(struct kinfo_proc);
+    if(sysctl((int[]){CTL_KERN,KERN_PROC,KERN_PROC_PGRP,
+     tcgetpgrp(CFFileDescriptorGetNativeDescriptor(ptyref))},
+     4,&kp,&kpsize,NULL,0)!=-1){
+      return CFStringCreateWithFileSystemRepresentation(NULL,
+       kp.kp_proc.p_comm);// MAXCOMLEN=16
+    }
+  }
+  return NULL;
+}
+-(Boolean)isRunning {
+  return ptyref?YES:NO;
+}
+-(void)resetBell {
+  bBell=false;
+}
+-(void)sendKey:(VT100Key)key {
+  if(!ptyref){
+    [self ptyInit];
+    return;
+  }
+  char CSI[4]="\033[?~";
+  char OSC[3]="\033O?";
+  char* ptr;
+  size_t len;
+  switch(key){
+    case '\n':ptr=(char[]){'\r','\n'};len=bLNM?2:1;break;
+    case kVT100KeyBackArrow:ptr=(char[]){bDECBKM?'\b':0177};len=1;break;
+    case kVT100KeyInsert:(ptr=CSI)[2]='2';len=4;break;
+    case kVT100KeyDelete:(ptr=CSI)[2]='3';len=4;break;
+    case kVT100KeyPageUp:(ptr=CSI)[2]='5';len=4;break;
+    case kVT100KeyPageDown:(ptr=CSI)[2]='6';len=4;break;
+    case kVT100KeyUpArrow:(ptr=bDECCKM?OSC:CSI)[2]='A';len=3;break;
+    case kVT100KeyDownArrow:(ptr=bDECCKM?OSC:CSI)[2]='B';len=3;break;
+    case kVT100KeyLeftArrow:(ptr=bDECCKM?OSC:CSI)[2]='D';len=3;break;
+    case kVT100KeyRightArrow:(ptr=bDECCKM?OSC:CSI)[2]='C';len=3;break;
+    case kVT100KeyHome:(ptr=bDECCKM?OSC:CSI)[2]='H';len=3;break;
+    case kVT100KeyEnd:(ptr=bDECCKM?OSC:CSI)[2]='F';len=3;break;
+    default:ptr=(char[]){key};len=1;break;
+  }
+  write(CFFileDescriptorGetNativeDescriptor(ptyref),ptr,len);
+}
+-(void)sendString:(CFStringRef)string {
+  if(!ptyref){
+    [self ptyInit];
+    return;
+  }
+  int fd=CFFileDescriptorGetNativeDescriptor(ptyref);
+  CFRange remain=CFRangeMake(0,CFStringGetLength(string));
+  while(remain.length>0){
+    UInt8 buf[4096];
+    CFIndex len;
+    CFIndex nconv=CFStringGetBytes(string,remain,
+     encoding,'?',false,buf,sizeof(buf),&len);
+    write(fd,buf,len);
+    remain.location+=nconv;
+    remain.length-=nconv;
+  }
+}
+-(void)setCurrentLine {
+  currentLine=(screen_line_t*)CFArrayGetValueAtIndex(lineBuffer,
+   currentIndex=CFArrayGetCount(lineBuffer)-screenHeight+cursorY);
+}
+-(void)setEncoding:(CFStringEncoding)_encoding {
+  if(encoding!=_encoding){
+    encoding=_encoding;
+    // allocate a backlog for multi-byte characters
+    if(encbuf){free(encbuf);}
+    CFIndex size=CFStringGetMaximumSizeForEncoding(1,encoding);
+    if((encbuf=(size>1)?malloc(size):NULL)){
+      encbuf_size=size;
+      encbuf_index=0;
+    }
+  }
+}
+-(void)setWidth:(CFIndex)newWidth height:(CFIndex)newHeight {
+  if(newWidth==screenWidth && newHeight==screenHeight){return;}
+  if(newWidth<4){newWidth=4;}
+  if(newHeight<2){newHeight=2;}
+  CFIndex count=CFArrayGetCount(lineBuffer),i;
+  // remove lines from the bottom if newHeight<screenHeight
+  CFIndex iend=(cursorY>newHeight-1)?cursorY:newHeight-1;
+  for (i=screenHeight-1;i>iend;i--){
+    CFArrayRemoveValueAtIndex(lineBuffer,--count);
+  }
+  size_t newlinesize=newWidth*sizeof(screen_char_t);
+  if(newWidth>screenWidth){
+    // resize tab stop array
+    if(newWidth>tabstops_size){
+      tabstops=realloc(tabstops,newWidth);
+      for (i=tabstops_size;i<newWidth;i++){tabstops[i]=((i%$tabWidth)==0);}
+      tabstops_size=newWidth;
+    }
+    // resize lines to at least newWidth
+    for (i=0;i<count;i++){
+      screen_line_t* line=(screen_line_t*)CFArrayGetValueAtIndex(lineBuffer,i);
+      if(line->size<newlinesize){
+        screen_line_t* newline=screen_line_create(newlinesize);
+        memcpy(newline->buf,line->buf,line->size);
+        CFArraySetValueAtIndex(lineBuffer,i,newline);
+        screen_line_release(NULL,newline);
+      }
+    }
+  }
+  if(newHeight>screenHeight){
+    CFIndex nlines=(count<newHeight)?newHeight-count:0;
+    cursorY+=newHeight-screenHeight-nlines;
+    for (i=0;i<nlines;i++){
+      screen_line_t* newline=screen_line_create(newlinesize);
+      CFArrayAppendValue(lineBuffer,newline);
+      screen_line_release(NULL,newline);
+    }
+  }
+  bPastEOL=false;
+  bTrackChanges=false;
+  if(cursorX>newWidth-1){cursorX=newWidth-1;}
+  if(cursorY>newHeight-1){cursorY=newHeight-1;}
+  if(windowTop>newHeight-1){windowTop=newHeight-1;}
+  if(windowBottom==screenHeight-1 || windowBottom>newHeight-1)
+    windowBottom=newHeight-1;
+  screenWidth=newWidth;
+  screenHeight=newHeight;
+  [self setCurrentLine];
+  // resize the pty
+  if(ptyref && ioctl(CFFileDescriptorGetNativeDescriptor(ptyref),
+   TIOCSWINSZ,&(struct winsize){.ws_col=newWidth,.ws_row=newHeight})==-1){
+    [NSException raise:@"ioctl(TIOCSWINSZ)"
+     format:@"%d: %s",errno,strerror(errno)];
+  }
+}
+-(void)changedLineAtIndex:(CFIndex)index {
+  if(bTrackChanges){
+    index=(CFIndex)CFArrayGetValueAtIndex(indexMap,index-indexTop);
+    if(index!=-1){CFSetAddValue(linesChanged,(void*)(index+indexTop));}
+  }
 }
 -(void)shiftLines:(CFIndex)nlines fromY:(CFIndex)fromY toY:(CFIndex)toY {
   CFIndex top=CFArrayGetCount(lineBuffer)-screenHeight;
@@ -205,7 +234,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
     screen_line_release(NULL,newline);
   }
   currentLine=(screen_line_t*)CFArrayGetValueAtIndex(lineBuffer,currentIndex);
-  if(!bRedrawAll){
+  if(bTrackChanges){
     fromIndex-=indexTop;
     toIndex-=indexTop;
     for (i=0;i<nlines;i++){
@@ -214,67 +243,112 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
     }
   }
 }
--(void)updateCurrentLine {
-  currentLine=(screen_line_t*)CFArrayGetValueAtIndex(lineBuffer,
-   currentIndex=CFArrayGetCount(lineBuffer)-screenHeight+cursorY);
-}
 -(void)nextLine {
   if(cursorY==windowBottom || cursorY==screenHeight-1){
     if(windowTop==0 && windowBottom==screenHeight-1){
-      currentLine=screen_line_create(screenWidth*sizeof(screen_char_t));
-      CFArrayAppendValue(lineBuffer,currentLine);
-      screen_line_release(NULL,currentLine);
+      screen_line_t* newline=screen_line_create(screenWidth*sizeof(screen_char_t));
+      CFArrayAppendValue(lineBuffer,newline);
+      screen_line_release(NULL,newline);
+      currentLine=newline;
       currentIndex=CFArrayGetCount(lineBuffer)-1;
-      if(!bRedrawAll){CFArrayAppendValue(indexMap,(void*)-1);}
+      if(bTrackChanges){CFArrayAppendValue(indexMap,(void*)-1);}
     }
     else {[self shiftLines:1 fromY:windowTop toY:cursorY];}
   }
   else {
     cursorY++;
-    [self updateCurrentLine];
+    [self setCurrentLine];
   }
 }
--(void)changedLineAtIndex:(CFIndex)index {
-  if(!bRedrawAll){
-    index=(CFIndex)CFArrayGetValueAtIndex(indexMap,index-indexTop);
-    if(index!=-1){CFSetAddValue(linesChanged,(void*)(index+indexTop));}
+-(void)ptyEvent:(CFOptionFlags)events {
+  int fd=CFFileDescriptorGetNativeDescriptor(ptyref);
+  unsigned char databuf[4096];
+  ssize_t datalen;
+  __readData:datalen=read(fd,databuf,sizeof(databuf));
+  switch(datalen){
+    case -1:
+      if(errno==EINTR){goto __readData;}
+      kill(processID,SIGKILL);
+    case 0:{
+      int status=0;
+      waitpid(processID,&status,0);
+      CFFileDescriptorInvalidate(ptyref);
+      CFRelease(ptyref);
+      ptyref=NULL;
+      datalen=sprintf((char*)databuf,"\033[m[Exit %d]\r\n"
+       "\033[1mPress any key to restart.",
+       WIFEXITED(status)?WEXITSTATUS(status):-1);
+      break;
+    }
+    default:CFFileDescriptorEnableCallBacks(ptyref,events);
   }
-}
--(void)processInput:(NSData*)input output:(NSMutableData*)output bell:(BOOL*)bell {
-  const unsigned char* inputptr=input.bytes;
-  const unsigned char* inputend=inputptr+input.length;
-  for (;inputptr<inputend;inputptr++){
+  unsigned char* dataptr=databuf;
+  unsigned char* dataend=dataptr+datalen;
+  for (;dataptr<dataend;dataptr++){
     CFIndex i,j;
-    if(*inputptr<0x20){// this is a control character
-      switch(*inputptr){
-        case 0x05:break;//! ENQ
-        case 0x07:*bell=YES;break;
-        case 0x08:
-          bPastEOL=false;
-          if(cursorX>0){cursorX--;}
-          break;
-        case 0x09:
-          while(cursorX<screenWidth-1 && !tabstops[++cursorX]);
-          break;
-        case 0x0A:case 0x0B:case 0x0C:
-          if(!bPastEOL){[self nextLine];}
-          break;
-        case 0x0D:
-          bPastEOL=false;
-          cursorX=0;
-          break;
-        case 0x0E:glCharset=1;break;
-        case 0x0F:glCharset=0;break;
-        case 0x11:break;//! XON
-        case 0x13:break;//! XOFF
-        case 0x18:case 0x1a:sequence=kSequenceNone;break;
-        case 0x1b:sequence=kSequenceESC;break;
+    if(sequence==kSequenceIgnore){
+      if(*dataptr==033){sequence=kSequencePossibleST;}
+    }
+    else if(sequence==kSequencePossibleST){
+      sequence=(*dataptr=='\\')?kSequenceNone:kSequenceIgnore;
+    }
+    else if(*dataptr<0x20){// this is a control character
+      if(OSCString){
+        switch(*dataptr){
+          case '\a':__processOSC:
+            if((j=CFStringGetLength(OSCString))>=2
+             && CFStringGetCharacterAtIndex(OSCString,1)==';'){
+              switch(CFStringGetCharacterAtIndex(OSCString,0)){
+                case '0':case '2':
+                  if(title){CFRelease(title);}
+                  title=(j==2)?NULL:CFStringCreateWithSubstring(NULL,
+                   OSCString,CFRangeMake(2,j-2));
+                  break;
+              }
+            }
+          case 030:case 032:
+            sequence=kSequenceNone;
+            CFRelease(OSCString);
+            OSCString=NULL;
+            break;
+          case 033:sequence=kSequenceESC;break;
+        }
+      }
+      else {
+        switch(*dataptr){
+          case 005:break;//! ENQ
+          case '\a':bBell=true;break;
+          case '\b':
+            bPastEOL=false;
+            if(cursorX>0){cursorX--;}
+            break;
+          case '\t':
+            while(cursorX<screenWidth-1 && !tabstops[++cursorX]);
+            break;
+          case '\n':case '\v':case '\f':
+            if(!bPastEOL){[self nextLine];}
+            break;
+          case '\r':
+            bPastEOL=false;
+            cursorX=0;
+            break;
+          case 016:glCharset=1;break;
+          case 017:glCharset=0;break;
+          case 030:case 032:sequence=kSequenceNone;break;
+          case 033:sequence=kSequenceESC;break;
+        }
       }
     }
     else if(sequence==kSequenceESC){
+      if(OSCString){
+        if(*dataptr=='\\'){goto __processOSC;}
+        CFRelease(OSCString);
+        OSCString=NULL;
+      }
       sequence=kSequenceNone;
-      switch(*inputptr){
+      switch(*dataptr){
         case '[':sequence=kSequenceCSI;break;
+        case ']':OSCString=CFStringCreateMutable(NULL,0);break;
         case '#':sequence=kSequenceDEC;break;
         case '=':break;//! DECKPAM (Keypad Application Mode)
         case '>':break;//! DECKPNM (Keypad Numeric Mode)
@@ -283,6 +357,11 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
         case ')':sequence=kSequenceSCS;SCSIndex=1;break;
         case '*':sequence=kSequenceSCS;SCSIndex=2;break;
         case '+':sequence=kSequenceSCS;SCSIndex=3;break;
+        case '^':// PM (Privacy Message)
+        case '_':// APC (Application Program Command)
+        case 'P':// DCS (Device Control String)
+        case 'X':// SOS (Start of String)
+          sequence=kSequenceIgnore;break;
         case '7':// DECSC (Save Cursor)
           saveCursorX=cursorX;
           saveCursorY=cursorY;
@@ -294,7 +373,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
           bPastEOL=false;
           cursorX=saveCursorX;
           cursorY=saveCursorY;
-          [self updateCurrentLine];
+          [self setCurrentLine];
           nullChar=saveNullChar;
           glCharset=saveGLCharset;
           memcpy(charsets,saveCharsets,sizeof(charsets));
@@ -308,7 +387,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
           }
           else if(cursorY<screenHeight-1){
             cursorY++;
-            [self updateCurrentLine];
+            [self setCurrentLine];
           }
           break;
         case 'H':// HTS (Horizontal Tabulation Set)
@@ -320,52 +399,65 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
           }
           else if(cursorY>0){
             cursorY--;
-            [self updateCurrentLine];
+            [self setCurrentLine];
           }
           break;
+        case 'N':glCharset&=(2<<2)|3;break;
+        case 'O':glCharset&=(3<<2)|3;break;
         case 'Z':// DECID (Identify Terminal)
-          [output appendBytes:VT100_DA length:strlen(VT100_DA)];
+          write(fd,$DA,strlen($DA));
           break;
         case 'c':// RIS (Reset To Initial State)
-          [self resetTerminal];
+          [self ptyReset];
           break;
         case 'n':glCharset=2;break;
         case 'o':glCharset=3;break;
       }
     }
     else if(sequence==kSequenceCSI){
-      if(CSIModifier==kCSIModifierUndef){
-        switch(*inputptr){
-          case '>':CSIModifier=kCSIModifierGT;continue;
+      if(!CSIParams){
+        CSIParams=CFArrayCreateMutable(NULL,0,NULL);
+        switch(*dataptr){
           case '?':CSIModifier=kCSIModifierQM;continue;
+          case '>':CSIModifier=kCSIModifierGT;continue;
+          case '=':CSIModifier=kCSIModifierEQ;continue;
           default:CSIModifier=kCSIModifierNone;
         }
       }
-      if(*inputptr>='0' && *inputptr<='9'){
-        CSIParam=CSIParam*10+*inputptr-'0';
+      if(*dataptr>='0' && *dataptr<='9'){
+        CSIParam=CSIParam*10+*dataptr-'0';
         continue;
       }
-      if(*inputptr==';' || CSIParam>0){
+      if(*dataptr==';' || CSIParam>0){
         CFArrayAppendValue(CSIParams,(void*)CSIParam);
         CSIParam=0;
-        if(*inputptr==';'){continue;}
+        if(*dataptr==';'){continue;}
       }
       sequence=kSequenceNone;
+      if(*dataptr=='c'){
+        switch(CSIModifier){
+          case kCSIModifierNone:// DA (Device Attributes)
+            write(fd,$DA,strlen($DA));
+            break;
+          case kCSIModifierGT:// DA2 (Secondary Device Attributes)
+            write(fd,$DA2,strlen($DA2));
+            break;
+          case kCSIModifierEQ:// DA3 (Tertiary Device Attributes)
+            write(fd,$DA3,strlen($DA3));
+            break;
+          default:break;
+        }
+        CFRelease(CSIParams);
+        CSIParams=NULL;
+        continue;
+      }
       CFIndex nparams=CFArrayGetCount(CSIParams);
       CFIndex* params=malloc(nparams*sizeof(CFIndex));
       CFArrayGetValues(CSIParams,CFRangeMake(0,nparams),(const void**)params);
-      CFArrayRemoveAllValues(CSIParams);
+      CFRelease(CSIParams);
+      CSIParams=NULL;
       unsigned char opt=0;
-      if(CSIModifier==kCSIModifierGT){
-        switch(*inputptr){
-          case 'c':// DA2 (Secondary Device Attributes)
-            if(nparams==0 || params[0]==0){
-              [output appendBytes:VT100_DA2 length:strlen(VT100_DA2)];
-            }
-            break;
-        }
-      }
-      else if(CSIModifier==kCSIModifierQM){
+      if(CSIModifier==kCSIModifierQM){
         enum {
           kDECCKM=1,
           kDECOM=6,
@@ -373,7 +465,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
           kDECTCEM=25,
           kDECBKM=67,
         };
-        switch(*inputptr){
+        switch(*dataptr){
           case 'h':// DECSET (DEC Private Mode Set)
             opt=1;
           case 'l':// DECRST (DEC Private Mode Reset)
@@ -397,7 +489,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
                   cursorX=cursorY=0;
                   windowTop=0;
                   windowBottom=screenHeight-1;
-                  [self updateCurrentLine];
+                  [self setCurrentLine];
                   break;
                 }
                 case 47:
@@ -419,7 +511,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
                       swapGLCharset=glCharset;
                       memcpy(swapCharsets,charsets,sizeof(charsets));
                     }
-                    [self resetTerminal];
+                    [self ptyReset];
                   }
                   else if(swapLineBuffer){
                     // Restore default line buffer
@@ -439,10 +531,10 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
                     windowTop=swapWindowTop;
                     windowBottom=swapWindowBottom;
                     bPastEOL=false;
-                    bRedrawAll=true;
+                    bTrackChanges=false;
                     cursorX=swapCursorX;
                     cursorY=swapCursorY;
-                    [self updateCurrentLine];
+                    [self setCurrentLine];
                     [self setWidth:width height:height];
                     nullChar=swapNullChar;
                     glCharset=swapGLCharset;
@@ -469,7 +561,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
         }
       }
       else if(CSIModifier==kCSIModifierNone){
-        switch(*inputptr){
+        switch(*dataptr){
           case 'F':// CPL (Cursor Previous Line)
             bPastEOL=false;
             cursorX=0;
@@ -479,7 +571,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
             else if(j<0){j=0;}
             if(cursorY!=j){
               cursorY=j;
-              [self updateCurrentLine];
+              [self setCurrentLine];
             }
             break;
           case 'E':// CNL (Cursor Next Line)
@@ -492,7 +584,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
             else if(j>screenHeight-1){j=screenHeight-1;}
             if(cursorY!=j){
               cursorY=j;
-              [self updateCurrentLine];
+              [self setCurrentLine];
             }
             break;
           case 'C':// CUF (Cursor Forward)
@@ -523,7 +615,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
             if(j>screenHeight-1){j=screenHeight-1;}
             if(cursorY!=j){
               cursorY=j;
-              [self updateCurrentLine];
+              [self setCurrentLine];
             }
             break;
           case 'I':// CHT (Cursor Horizontal Forward Tabulation)
@@ -620,9 +712,6 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
             bPastEOL=false;
             j=(0<nparams && params[0]>1)?params[0]:1;
             while(cursorX>0 && (!tabstops[--cursorX] || --j>0));
-            break;
-          case 'c':// DA (Device Attributes)
-            [output appendBytes:VT100_DA length:strlen(VT100_DA)];
             break;
           case 'g':// TBC (Tabulation Clear)
             switch((0<nparams)?params[0]:0){
@@ -725,13 +814,13 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
           case 'n':// DSR (Device Status Report)
             switch((0<nparams)?params[0]:0){
               case 5:
-                [output appendBytes:VT100_DSR length:strlen(VT100_DSR)];
+                write(fd,$DSR,strlen($DSR));
                 break;
               case 6:{
                 char* msg;
-                int len=asprintf(&msg,VT100_CPR,
+                int len=asprintf(&msg,"\033[%ld;%ldR",
                  cursorY+1-(bDECOM?windowTop:0),cursorX+1);
-                if(len>0){[output appendBytes:msg length:len];}
+                if(len>0){write(fd,msg,len);}
                 if(len!=-1){free(msg);}
                 break;
               }
@@ -750,85 +839,87 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
               j=bDECOM?windowTop:0;
               if(cursorY!=j){
                 cursorY=j;
-                [self updateCurrentLine];
+                [self setCurrentLine];
               }
             }
             break;
-          case 't':break;//! Manipulate window
           case 'x':// DECREQTPARM (Request Terminal Parameters)
             switch((0<nparams)?params[0]:0){
               case 0:
-                [output appendBytes:VT100_DECREPTPARM0
-                 length:strlen(VT100_DECREPTPARM0)];
+                write(fd,$DECREPTPARM0,strlen($DECREPTPARM0));
                 break;
               case 1:
-                [output appendBytes:VT100_DECREPTPARM1
-                 length:strlen(VT100_DECREPTPARM1)];
+                write(fd,$DECREPTPARM1,strlen($DECREPTPARM1));
                 break;
             }
             break;
           case 'y':break;//! DECTST (Invoke Confidence Test)
-          case '$':case '&':case '\'':sequence=kSequenceSkipEnd;
+          case '$':case '&':case '\'':sequence=kSequenceSkipNext;
         }
       }
       free(params);
-      CSIModifier=kCSIModifierUndef;
     }
     else if(sequence==kSequenceDEC){
       sequence=kSequenceNone;
-      switch(*inputptr){
+      switch(*dataptr){
         case '3':break;//! DECDHL (Double Height Line, top half)
         case '4':break;//! DECDHL (Double Height Line, bottom half)
         case '5':break;//! DECSWL (Single Width Line)
         case '6':break;//! DECDWL (Double Width Line)
         case '8':{// DECALN (Screen Alignment Test)
           CFIndex count=CFArrayGetCount(lineBuffer);
-          screen_char_t E={.c='E'};
           for (i=count-screenHeight;i<count;i++){
             screen_line_t* line=(screen_line_t*)
              CFArrayGetValueAtIndex(lineBuffer,i);
-            for (j=0;j<screenWidth;j++){line->buf[j]=E;}
+            for (j=0;j<screenWidth;j++){
+              line->buf[j]=(screen_char_t){.c='E'};
+            }
             [self changedLineAtIndex:i];
           }
           bPastEOL=false;
           cursorX=cursorY=0;
-          [self updateCurrentLine];
+          [self setCurrentLine];
           break;
         }
       }
     }
     else if(sequence==kSequenceSCS){
       sequence=kSequenceNone;
-      charsets[SCSIndex]=*inputptr;
+      charsets[SCSIndex]=*dataptr;
     }
-    else if(sequence==kSequenceSkipEnd){
+    else if(sequence==kSequenceSkipNext){
       sequence=kSequenceNone;
     }
     else {// this is a printable character
       unichar uc;
-      if(*inputptr<0x80){
-        switch(charsets[glCharset]){
-          case '0':uc=charmap_graphics[*inputptr];break;
-          default:uc=*inputptr;break;
+      if(*dataptr<0x80){
+        switch(charsets[glCharset>3?glCharset>>2:glCharset]){
+          case '0':uc=$charsetGraphics[*dataptr];break;
+          default:uc=*dataptr;break;
         }
+        if(glCharset>3){glCharset&=3;}
       }
       else {
         CFStringRef str;
         if(encbuf){
-          encbuf[encbuf_index++]=*inputptr;
+          encbuf[encbuf_index++]=*dataptr;
           str=CFStringCreateWithBytesNoCopy(NULL,
            encbuf,encbuf_index,encoding,false,kCFAllocatorNull);
           if(str || encbuf_index==encbuf_size){encbuf_index=0;}
         }
         else {
           str=CFStringCreateWithBytesNoCopy(NULL,
-           inputptr,1,encoding,false,kCFAllocatorNull);
+           dataptr,1,encoding,false,kCFAllocatorNull);
         }
         if(!str){continue;}
         uc=CFStringGetCharacterAtIndex(str,0);
         CFRelease(str);
         // skip zero-width characters
         if(uc==0x200b || uc==0x200c || uc==0x200d || uc==0xfeff){continue;}
+      }
+      if(OSCString){
+        CFStringAppendCharacters(OSCString,&uc,1);
+        continue;
       }
       Boolean wrapped=false;
       if(bPastEOL){
@@ -853,76 +944,130 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
       else {bPastEOL=true;}
     }
   }
-}
--(void)setEncoding:(CFStringEncoding)_encoding {
-  if(encoding!=_encoding){
-    encoding=_encoding;
-    // allocate a backlog for multi-byte characters
-    if(encbuf){free(encbuf);}
-    CFIndex size=CFStringGetMaximumSizeForEncoding(1,encoding);
-    if((encbuf=(size>1)?malloc(size):NULL)){
-      encbuf_size=size;
-      encbuf_index=0;
-    }
-  }
-}
--(void)setWidth:(CFIndex)newWidth height:(CFIndex)newHeight {
-  if(newWidth==screenWidth && newHeight==screenHeight){return;}
-  if(newWidth<4){newWidth=4;}
-  if(newHeight<2){newHeight=2;}
-  CFIndex count=CFArrayGetCount(lineBuffer),i;
-  // remove lines from the bottom if newHeight<screenHeight
-  CFIndex iend=(cursorY>newHeight-1)?cursorY:newHeight-1;
-  for (i=screenHeight-1;i>iend;i--){
-    CFArrayRemoveValueAtIndex(lineBuffer,--count);
-  }
-  size_t newlinesize=newWidth*sizeof(screen_char_t);
-  if(newWidth>screenWidth){
-    // resize tab stop array
-    if(newWidth>tabstops_size){
-      tabstops=realloc(tabstops,newWidth);
-      for (i=tabstops_size;i<newWidth;i++){tabstops[i]=((i%TAB_WIDTH)==0);}
-      tabstops_size=newWidth;
-    }
-    // resize lines to at least newWidth
-    for (i=0;i<count;i++){
-      screen_line_t* line=(screen_line_t*)CFArrayGetValueAtIndex(lineBuffer,i);
-      if(line->size<newlinesize){
-        screen_line_t* newline=screen_line_create(newlinesize);
-        memcpy(newline->buf,line->buf,line->size);
-        CFArraySetValueAtIndex(lineBuffer,i,newline);
-        screen_line_release(NULL,newline);
+  // compute changes and notify delegate
+  CFIndex count=CFArrayGetCount(indexMap),i;
+  if(bTrackChanges){
+    CFMutableSetRef deletions=CFSetCreateMutable(NULL,count,NULL);
+    CFMutableSetRef insertions=CFSetCreateMutable(NULL,count,NULL);
+    Boolean colchanged=prevCursorX!=cursorX;
+    CFIndex jnext=0,jcursor=prevCursorY,top=indexTop;
+    CFIndex inext=0,icursor=bDECTCEM?currentIndex-top:-1;
+    for (i=0;i<=count;i++){
+      CFIndex j=(i==count)?screenHeight:
+       (CFIndex)CFArrayGetValueAtIndex(indexMap,i);
+      if(j==-1){CFSetAddValue(insertions,(void*)(top+i));}
+      else {
+        while(jnext<j){
+          CFIndex delindex=top+jnext++;
+          if(inext<i){
+            CFSetRemoveValue(insertions,(void*)(top+inext++));
+            CFSetAddValue(linesChanged,(void*)delindex);
+          }
+          else {
+            CFSetRemoveValue(linesChanged,(void*)delindex);
+            CFSetAddValue(deletions,(void*)delindex);
+          }
+        }
+        jnext++;
+        inext=i+1;
+        if(colchanged?(i==icursor || j==jcursor):
+         ((i==icursor)!=(j==jcursor))){
+          // erase or redraw cursor
+          CFSetAddValue(linesChanged,(void*)(top+j));
+        }
       }
     }
+    bTrackChanges=[delegate terminal:self commitChanges:linesChanged
+     deletions:deletions insertions:insertions];
+    CFRelease(deletions);
+    CFRelease(insertions);
   }
-  if(newHeight>screenHeight){
-    CFIndex nlines=(count<newHeight)?newHeight-count:0;
-    cursorY+=newHeight-screenHeight-nlines;
-    for (i=0;i<nlines;i++){
-      screen_line_t* newline=screen_line_create(newlinesize);
-      CFArrayAppendValue(lineBuffer,newline);
-      screen_line_release(NULL,newline);
+  else {
+    bTrackChanges=[delegate terminal:self commitChanges:NULL
+     deletions:NULL insertions:NULL];
+  }
+  if(bTrackChanges){
+    // reset change tracking state
+    CFSetRemoveAllValues(linesChanged);
+    indexTop=CFArrayGetCount(lineBuffer)-screenHeight;
+    prevCursorX=bDECTCEM?cursorX:-1;
+    prevCursorY=bDECTCEM?cursorY:-1;
+    CFIndex* list=malloc(screenHeight*sizeof(CFIndex));
+    for (i=0;i<screenHeight;i++){list[i]=i;}
+    CFArrayReplaceValues(indexMap,CFRangeMake(0,count),
+     (const void**)list,screenHeight);
+    free(list);
+  }
+}
+-(void)ptyInit {
+  [self ptyReset];
+  int fd;
+  pid_t pid=forkpty(&fd,NULL,NULL,&(struct winsize){
+   .ws_col=screenWidth,.ws_row=screenHeight});
+  if(pid==-1){
+    [NSException raise:@"forkpty"
+     format:@"%d: %s",errno,strerror(errno)];
+    return;
+  }
+  else if(pid==0){
+    if(execve("/usr/bin/login",
+     (char*[]){"login","-fp",getenv("USER")?:"mobile",NULL},
+     (char*[]){"TERM=xterm",NULL})==-1){
+      [NSException raise:@"execve(login)"
+       format:@"%d: %s",errno,strerror(errno)];
     }
+    return;
   }
-  bPastEOL=false;
-  bRedrawAll=true;
-  if(cursorX>newWidth-1){cursorX=newWidth-1;}
-  if(cursorY>newHeight-1){cursorY=newHeight-1;}
-  if(windowTop>newHeight-1){windowTop=newHeight-1;}
-  if(windowBottom==screenHeight-1 || windowBottom>newHeight-1)
-    windowBottom=newHeight-1;
-  screenWidth=newWidth;
-  screenHeight=newHeight;
-  [self updateCurrentLine];
+  processID=pid;
+  ptyref=CFFileDescriptorCreate(NULL,fd,true,
+   ptyref_callback,&(CFFileDescriptorContext){.info=self});
+  CFFileDescriptorEnableCallBacks(ptyref,kCFFileDescriptorReadCallBack);
+  CFRunLoopSourceRef source=CFFileDescriptorCreateRunLoopSource(NULL,ptyref,0);
+  CFRunLoopAddSource(CFRunLoopGetMain(),source,kCFRunLoopCommonModes);
+  CFRelease(source);
+}
+-(void)ptyReset {
+  bDECBKM=false;// send delete on back arrow
+  bDECCKM=false;// send normal cursor keys
+  bDECOM=false;// disable origin mode
+  bDECAWM=true;// enable auto-wrapping
+  bDECTCEM=true;// show the cursor
+  bIRM=false;// disable insert mode
+  bLNM=false;// send CR on enter
+  bPastEOL=false;// cursor is not past end of line
+  bTrackChanges=false;// disable change tracking until next update
+  currentIndex=cursorX=cursorY=0;
+  windowTop=0;
+  windowBottom=screenHeight-1;
+  memset(&nullChar,0,sizeof(nullChar));
+  CFIndex i;
+  // reset tab stops
+  for (i=0;i<screenWidth;i++){tabstops[i]=((i%$tabWidth)==0);}
+  // reset line buffer
+  CFArrayRemoveAllValues(lineBuffer);
+  size_t size=screenWidth*sizeof(screen_char_t);
+  for (i=0;i<screenHeight;i++){
+    screen_line_t* newline=screen_line_create(size);
+    if(i==cursorY){currentLine=newline;}
+    CFArrayAppendValue(lineBuffer,newline);
+    screen_line_release(NULL,newline);
+  }
 }
 -(void)dealloc {
-  CFRelease(CSIParams);
+  if(ptyref){
+    kill(processID,SIGKILL);
+    CFFileDescriptorInvalidate(ptyref);
+    CFRelease(ptyref);
+  }
+  if(CSIParams){CFRelease(CSIParams);}
+  if(OSCString){CFRelease(OSCString);}
   if(encbuf){free(encbuf);}
   CFRelease(lineBuffer);
   if(swapLineBuffer){CFRelease(swapLineBuffer);}
   free(tabstops);
   CFRelease(indexMap);
   CFRelease(linesChanged);
+  if(title){CFRelease(title);}
   [super dealloc];
 }
 @end
