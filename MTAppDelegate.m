@@ -17,26 +17,24 @@
   window.rootViewController=controller=[[MTController alloc] init];
   [window makeKeyAndVisible];
   if(![[NSUserDefaults standardUserDefaults] boolForKey:@"firstRun"]){
-    UIAlertView* alert=[[UIAlertView alloc] initWithTitle:@"Welcome"
-     message:@"Welcome to MTerminal. Before using this app, you should be"
-     " aware of a powerful but easily overlooked feature: tap zones."
-     " Tap zones allow you to easily access keys and options not available"
-     " from the default keyboard, such as the arrow keys and control keys.\n\n"
-     "- To copy and paste text, invoke the edit menu by tapping and holding"
-     " the center of the terminal screen.\n"
-     "- To dismiss the keyboard, tap and hold with two fingers.\n"
-     "- To send an arrow key, tap on the corresponding edge of the terminal."
-     " For example, tap the top edge to send the Up arrow key, and tap the"
-     " right edge to send the Right arrow key. Tap and hold to repeatedly send"
-     " the corresponding arrow key.\n"
+    UIAlertView* alert=[[UIAlertView alloc] initWithTitle:@"Help" message:
+     @"- To send an arrow key, tap on the corresponding edge of the screen."
+     " Tap and hold to repeat an arrow key.\n"
      "- To send a control key, invoke the edit menu and tap the corresponding"
      " letter (e.g. C for Control-C) on the keyboard.\n"
-     "- To send Page Up, Page Down, Home, or End, press the Shift key on"
+     "- To send Page Up, Page Down, Home, or End, activate the Shift key on"
      " the keyboard and tap on the top, bottom, left, or right edge of the"
-     " terminal, respectively. Shift lock is also supported.\n"
+     " screen, respectively.\n"
      "- To send Insert, Delete, Esc, or Tab, tap on the upper left,"
-     " upper right, lower left, or lower right corner, respectively."
-     delegate:self cancelButtonTitle:@"Later" otherButtonTitles:@"Dismiss",nil];
+     " upper right, lower left, or lower right corner, respectively.\n"
+     "- To copy and paste text, invoke the edit menu by tapping and holding"
+     " the center of the screen.\n"
+     "- To dismiss the keyboard, tap and hold with two fingers.\n"
+     "- To open a new window or switch between windows, tap and hold"
+     " the lower right corner of the screen.\n"
+     "- To close the current window, tap and hold"
+     " the upper right corner of the screen." delegate:self
+     cancelButtonTitle:@"Later" otherButtonTitles:@"Dismiss",nil];
     [alert show];
     [alert release];
   }
