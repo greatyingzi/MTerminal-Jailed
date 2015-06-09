@@ -109,7 +109,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   char* ptr;
   size_t len;
   switch(key){
-    case '\n':ptr=(char[]){'\r','\n'};len=bLNM?2:1;break;
+    case kVT100KeyEnter:ptr=(char[]){'\r','\n'};len=bLNM?2:1;break;
     case kVT100KeyBackArrow:ptr=(char[]){bDECBKM?'\b':0177};len=1;break;
     case kVT100KeyInsert:(ptr=CSI)[2]='2';len=4;break;
     case kVT100KeyDelete:(ptr=CSI)[2]='3';len=4;break;
