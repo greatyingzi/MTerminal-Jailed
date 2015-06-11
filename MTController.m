@@ -277,19 +277,15 @@ static NSString* $_getTitle(VT100* terminal) {
   }
 }
 -(void)insertText:(NSString*)text {
-  VT100Key key=0;
   if(text.length==1){
     unichar c=[text characterAtIndex:0];
-    switch([UIMenuController sharedMenuController].menuVisible){
-      case YES:// send Control+(A..Z)
-        if(c>0x40 && c<0x5b){key=c-0x40;break;}
-        else if(c>0x60 && c<0x7b){key=c-0x60;break;}
-      default:
-        if(c<0x80){key=c;}
+    if(c<0x80){
+      [activeTerminal sendKey:((c==0x20 || c>=0x40)
+       && [UIMenuController sharedMenuController].menuVisible)?c&0x1f:c];
+      text=nil;
     }
   }
-  if(key){[activeTerminal sendKey:key];}
-  else {[activeTerminal sendString:(CFStringRef)text];}
+  if(text){[activeTerminal sendString:(CFStringRef)text];}
   if(!ctrlLock){
     [[UIMenuController sharedMenuController]
      setMenuVisible:NO animated:YES];
