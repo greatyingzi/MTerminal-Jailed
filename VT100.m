@@ -54,7 +54,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
 }
 
 @implementation VT100
-@synthesize delegate,encoding,title,processID,bBell;
+@synthesize delegate,encoding,title,processID,bellDeferred;
 -(id)initWithWidth:(CFIndex)_screenWidth height:(CFIndex)_screenHeight {
   if((self=[super init])){
     encoding=kCFStringEncodingASCII;
@@ -93,11 +93,8 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   }
   return NULL;
 }
--(Boolean)isRunning {
+-(BOOL)isRunning {
   return ptyref?YES:NO;
-}
--(void)resetBell {
-  bBell=false;
 }
 -(void)sendKey:(VT100Key)key {
   if(!ptyref){
@@ -282,6 +279,24 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
     }
     default:CFFileDescriptorEnableCallBacks(ptyref,events);
   }
+  BOOL notify=[delegate terminalShouldReportChanges:self];
+  if(bTrackChanges){
+    if(notify){
+      // reset change tracking state
+      CFSetRemoveAllValues(linesChanged);
+      indexTop=CFArrayGetCount(lineBuffer)-screenHeight;
+      prevCursorX=bDECTCEM?cursorX:-1;
+      prevCursorY=bDECTCEM?cursorY:-1;
+      CFIndex* list=malloc(screenHeight*sizeof(CFIndex)),i;
+      for (i=0;i<screenHeight;i++){list[i]=i;}
+      CFArrayReplaceValues(indexMap,
+       CFRangeMake(0,CFArrayGetCount(indexMap)),
+       (const void**)list,screenHeight);
+      free(list);
+    }
+    else {bTrackChanges=false;}
+  }
+  bool bell=false;
   unsigned char* dataptr=databuf;
   unsigned char* dataend=dataptr+datalen;
   for (;dataptr<dataend;dataptr++){
@@ -317,7 +332,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
       else {
         switch(*dataptr){
           case 005:break;//! ENQ
-          case '\a':bBell=true;break;
+          case '\a':bell=true;break;
           case '\b':
             bPastEOL=false;
             if(cursorX>0){cursorX--;}
@@ -921,7 +936,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
         CFStringAppendCharacters(OSCString,&uc,1);
         continue;
       }
-      Boolean wrapped=false;
+      bool wrapped=false;
       if(bPastEOL){
         // either auto-wrap or discard this character
         if(!bDECAWM){continue;}
@@ -944,12 +959,16 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
       else {bPastEOL=true;}
     }
   }
+  if(!notify){
+    if(bell){bellDeferred=YES;}
+    return;
+  }
   // compute changes and notify delegate
-  CFIndex count=CFArrayGetCount(indexMap),i;
   if(bTrackChanges){
+    CFIndex count=CFArrayGetCount(indexMap),i;
     CFMutableSetRef deletions=CFSetCreateMutable(NULL,count,NULL);
     CFMutableSetRef insertions=CFSetCreateMutable(NULL,count,NULL);
-    Boolean colchanged=prevCursorX!=cursorX;
+    bool colchanged=prevCursorX!=cursorX;
     CFIndex jnext=0,jcursor=prevCursorY,top=indexTop;
     CFIndex inext=0,icursor=bDECTCEM?currentIndex-top:-1;
     for (i=0;i<=count;i++){
@@ -977,27 +996,17 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
         }
       }
     }
-    bTrackChanges=[delegate terminal:self commitChanges:linesChanged
-     deletions:deletions insertions:insertions];
+    [delegate terminal:self changed:linesChanged
+     deleted:deletions inserted:insertions bell:bell];
     CFRelease(deletions);
     CFRelease(insertions);
   }
   else {
-    bTrackChanges=[delegate terminal:self commitChanges:NULL
-     deletions:NULL insertions:NULL];
+    [delegate terminal:self changed:NULL
+     deleted:NULL inserted:NULL bell:bell];
+    bTrackChanges=true;
   }
-  if(bTrackChanges){
-    // reset change tracking state
-    CFSetRemoveAllValues(linesChanged);
-    indexTop=CFArrayGetCount(lineBuffer)-screenHeight;
-    prevCursorX=bDECTCEM?cursorX:-1;
-    prevCursorY=bDECTCEM?cursorY:-1;
-    CFIndex* list=malloc(screenHeight*sizeof(CFIndex));
-    for (i=0;i<screenHeight;i++){list[i]=i;}
-    CFArrayReplaceValues(indexMap,CFRangeMake(0,count),
-     (const void**)list,screenHeight);
-    free(list);
-  }
+  bellDeferred=NO;
 }
 -(void)ptyInit {
   [self ptyReset];

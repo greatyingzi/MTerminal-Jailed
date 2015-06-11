@@ -15,7 +15,7 @@
   CFNumberRef ctUnderlineStyleDouble;
   CGFloat glyphAscent,glyphHeight,glyphMidY;
   CGFloat colWidth,rowHeight;
-  Boolean bellSound;
+  BOOL bellSound;
   SystemSoundID bellSoundID;
   BOOL ctrlLock;
   NSTimer* repeatTimer;

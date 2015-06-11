@@ -195,6 +195,7 @@ static NSString* $_getTitle(VT100* terminal) {
        &bellSoundID)==kAudioServicesNoError;
       CFRelease(soundURL);
     }
+    // set up display
     screenSection=[[NSIndexSet alloc] initWithIndex:0];
     allTerminals=[[NSMutableArray alloc] init];
   }
@@ -212,8 +213,8 @@ static NSString* $_getTitle(VT100* terminal) {
     frame.origin.x=0;
     tableView.frame=frame;
   }
-  [self terminal:activeTerminal commitChanges:NULL
-   deletions:NULL insertions:NULL];
+  [self terminal:activeTerminal changed:NULL
+   deleted:NULL inserted:NULL bell:NO];
 }
 -(void)screenSizeDidChange {
   UITableView* tableView=(UITableView*)self.view;
@@ -258,12 +259,6 @@ static NSString* $_getTitle(VT100* terminal) {
 }
 -(BOOL)canBecomeFirstResponder {
   return YES;
-}
--(UITextAutocapitalizationType)autocapitalizationType {
-  return UITextAutocapitalizationTypeNone;
-}
--(UITextAutocorrectionType)autocorrectionType {
-  return UITextAutocorrectionTypeNo;
 }
 -(UIKeyboardAppearance)keyboardAppearance {
   return UIKeyboardAppearanceDark;
@@ -499,7 +494,8 @@ static NSString* $_getTitle(VT100* terminal) {
          destructiveButtonTitle:nil otherButtonTitles:nil];
         for (VT100* terminal in allTerminals){
           [sheet addButtonWithTitle:[NSString stringWithFormat:@"%@%d: %@",
-           (terminal==activeTerminal)?@"\u2713 ":terminal.bBell?@"\u2407 ":@"",
+           (terminal==activeTerminal)?@"\u2713 ":
+           terminal.bellDeferred?@"\u2407 ":@"",
            terminal.processID,$_getTitle(terminal)]];
         }
         [sheet addButtonWithTitle:@"(+)"];
@@ -569,14 +565,13 @@ static NSString* $_getTitle(VT100* terminal) {
   MTScratchpad* scratch=[[MTScratchpad alloc]
    initWithTitle:$_getTitle(activeTerminal) content:content
    font:[UIFont fontWithName:(NSString*)fontName size:CTFontGetSize(ctFont)]
-   bgColor:[UIColor colorWithCGColor:bgDefault]
-   fgColor:[UIColor colorWithCGColor:fgDefault]];
+   textColor:[UIColor colorWithCGColor:fgDefault] refController:self];
   CFRelease(fontName);
   UINavigationController* nav=[[UINavigationController alloc]
    initWithRootViewController:scratch];
   [scratch release];
   nav.navigationBar.barStyle=UIBarStyleBlack;
-  [self presentViewController:nav animated:YES completion:NULL];
+  [self presentModalViewController:nav animated:YES];
   [nav release];
 }
 -(void)ctrlLock:(UIMenuController*)menu {
@@ -588,7 +583,9 @@ static NSString* $_getTitle(VT100* terminal) {
    initWithFrame:CGRectMake(0,0,0,0) style:UITableViewStylePlain];
   tableView.allowsSelection=NO;
   tableView.backgroundColor=[UIColor colorWithCGColor:bgDefault];
-  tableView.indicatorStyle=UIScrollViewIndicatorStyleWhite;
+  const CGFloat* RGB=CGColorGetComponents(bgDefault);
+  tableView.indicatorStyle=(RGB[0]>0.5 || RGB[1]>0.5 || RGB[2]>0.5)?
+   UIScrollViewIndicatorStyleBlack:UIScrollViewIndicatorStyleWhite;
   tableView.separatorStyle=UITableViewCellSeparatorStyleNone;
   tableView.rowHeight=rowHeight;
   tableView.dataSource=self;
@@ -629,12 +626,11 @@ static NSString* $_getTitle(VT100* terminal) {
   [reflowitem release];
   [ctrlitem release];
 }
--(Boolean)terminal:(VT100*)terminal commitChanges:(CFSetRef)changes deletions:(CFSetRef)deletions insertions:(CFSetRef)insertions {
-  if(terminal!=activeTerminal){return false;}
-  if(terminal.bBell){
-    if(bellSound){AudioServicesPlaySystemSound(bellSoundID);}
-    [terminal resetBell];
-  }
+-(BOOL)terminalShouldReportChanges:(VT100*)terminal {
+  return terminal==activeTerminal;
+}
+-(void)terminal:(VT100*)terminal changed:(CFSetRef)changes deleted:(CFSetRef)deletions inserted:(CFSetRef)insertions bell:(BOOL)bell {
+  if(bell && bellSound){AudioServicesPlaySystemSound(bellSoundID);}
   UITableView* tableView=(UITableView*)self.view;
   [UIView setAnimationsEnabled:NO];
   if(changes){
@@ -669,7 +665,6 @@ static NSString* $_getTitle(VT100* terminal) {
   [tableView scrollToRowAtIndexPath:
    [NSIndexPath indexPathForRow:terminal.numberOfLines-1 inSection:0]
    atScrollPosition:UITableViewScrollPositionBottom animated:NO];
-  return true;
 }
 -(void)dealloc {
   unsigned int i;

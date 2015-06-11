@@ -1,12 +1,12 @@
 #include "MTScratchpad.h"
 
 @implementation MTScratchpad
--(id)initWithTitle:(NSString*)title content:(NSString*)_content font:(UIFont*)_font bgColor:(UIColor*)_bgColor fgColor:(UIColor*)_fgColor {
+-(id)initWithTitle:(NSString*)title content:(NSString*)_content font:(UIFont*)_font textColor:(UIColor*)_textColor refController:(UIViewController*)_refController {
   if((self=[super init])){
     content=[_content retain];
     font=[_font retain];
-    bgColor=[_bgColor retain];
-    fgColor=[_fgColor retain];
+    textColor=[_textColor retain];
+    refController=[_refController retain];
     UINavigationItem* navitem=self.navigationItem;
     navitem.title=title;
     [navitem.leftBarButtonItem=[[UIBarButtonItem alloc]
@@ -31,17 +31,19 @@
   view.autocapitalizationType=UITextAutocapitalizationTypeNone;
   view.autocorrectionType=UITextAutocorrectionTypeNo;
   view.keyboardAppearance=UIKeyboardAppearanceDark;
-  [view.text=content release];content=nil;
-  [view.font=font release];font=nil;
-  [view.backgroundColor=bgColor release];bgColor=nil;
-  [view.textColor=fgColor release];fgColor=nil;
+  UIScrollView* refview=(UIScrollView*)refController.view;
+  view.indicatorStyle=refview.indicatorStyle;
+  view.backgroundColor=refview.backgroundColor;
+  view.text=content;
+  view.font=font;
+  view.textColor=textColor;
   [self.view=view release];
 }
 -(void)dealloc {
   [content release];
   [font release];
-  [bgColor release];
-  [fgColor release];
+  [textColor release];
+  [refController release];
   [super dealloc];
 }
 @end

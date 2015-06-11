@@ -21,24 +21,24 @@ typedef struct screen_char_t {
   unichar c;
   unsigned char bgcolor;
   unsigned char fgcolor;
-  Boolean bgcolor_isset:1;
-  Boolean fgcolor_isset:1;
+  bool bgcolor_isset:1;
+  bool fgcolor_isset:1;
   enum {
     kFontWeightNormal,
     kFontWeightBold,
     kFontWeightFaint,
   } weight:2;
-  Boolean italicize:1;
+  bool italicize:1;
   enum {
     kUnderlineNone,
     kUnderlineSingle,
     kUnderlineDouble,
   } underline:2;
-  Boolean blink:1;
-  Boolean inverse:1;
-  Boolean hidden:1;
-  Boolean strikethrough:1;
-  Boolean wrapped:1;
+  bool blink:1;
+  bool inverse:1;
+  bool hidden:1;
+  bool strikethrough:1;
+  bool wrapped:1;
 } screen_char_t;
 
 typedef struct screen_line_t {
@@ -48,23 +48,21 @@ typedef struct screen_line_t {
 } screen_line_t;
 
 @protocol VT100Delegate
-// return true to track changes
--(Boolean)terminal:(VT100*)terminal commitChanges:(CFSetRef)changes deletions:(CFSetRef)deletions insertions:(CFSetRef)insertions;
+-(BOOL)terminalShouldReportChanges:(VT100*)terminal;
+-(void)terminal:(VT100*)terminal changed:(CFSetRef)changes deleted:(CFSetRef)deletions inserted:(CFSetRef)insertions bell:(BOOL)bell;
 @end
 
 @interface VT100 : NSObject {
   // bit fields
-  Boolean bDECBKM:1,mDECBKM:1;
-  Boolean bDECCKM:1,mDECCKM:1;
-  Boolean bDECOM:1,mDECOM:1,swapDECOM:1;
-  Boolean bDECAWM:1,mDECAWM:1,swapDECAWM:1;
-  Boolean bDECTCEM:1,mDECTCEM:1;
-  Boolean bIRM:1;
-  Boolean bLNM:1;
-  Boolean bPastEOL:1;
-  Boolean bTrackChanges:1;
-  Boolean bBell:1;
-  unsigned int SCSIndex:2;
+  bool bDECBKM:1,mDECBKM:1;
+  bool bDECCKM:1,mDECCKM:1;
+  bool bDECOM:1,mDECOM:1,swapDECOM:1;
+  bool bDECAWM:1,mDECAWM:1,swapDECAWM:1;
+  bool bDECTCEM:1,mDECTCEM:1;
+  bool bIRM:1;
+  bool bLNM:1;
+  bool bPastEOL:1;
+  bool bTrackChanges:1;
   // sequence parser
   enum {
     kSequenceNone,
@@ -82,6 +80,7 @@ typedef struct screen_line_t {
     kCSIModifierGT,
     kCSIModifierEQ,
   } CSIModifier;
+  unsigned int SCSIndex;
   unsigned long CSIParam;
   CFMutableArrayRef CSIParams;
   CFMutableStringRef OSCString;
@@ -101,7 +100,7 @@ typedef struct screen_line_t {
   unsigned char* encbuf;
   CFIndex encbuf_size,encbuf_index;
   // tab stops
-  Boolean* tabstops;
+  bool* tabstops;
   size_t tabstops_size;
   // line buffers
   CFMutableArrayRef lineBuffer;
@@ -118,13 +117,12 @@ typedef struct screen_line_t {
 @property(nonatomic,assign) CFStringEncoding encoding;
 @property(nonatomic,readonly) CFStringRef title;
 @property(nonatomic,readonly) pid_t processID;
-@property(nonatomic,readonly) Boolean bBell;
+@property(nonatomic,readonly) BOOL bellDeferred;
 -(id)initWithWidth:(CFIndex)_screenWidth height:(CFIndex)_screenHeight;
 -(CFIndex)numberOfLines;
 -(screen_char_t*)charactersAtLineIndex:(CFIndex)index length:(CFIndex*)length cursorColumn:(CFIndex*)cursorColumn;
 -(CFStringRef)copyProcessName;
--(Boolean)isRunning;
--(void)resetBell;
+-(BOOL)isRunning;
 -(void)sendKey:(VT100Key)key;
 -(void)sendString:(CFStringRef)string;
 -(void)setWidth:(CFIndex)newWidth height:(CFIndex)newHeight;
