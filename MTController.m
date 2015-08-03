@@ -263,8 +263,14 @@ static NSString* $_getTitle(VT100* terminal) {
 -(UIKeyboardAppearance)keyboardAppearance {
   return UIKeyboardAppearanceDark;
 }
+-(UITextAutocapitalizationType)autocapitalizationType {
+  return UITextAutocapitalizationTypeNone;
+}
+-(UITextAutocorrectionType)autocorrectionType {
+  return UITextAutocorrectionTypeNo;
+}
 -(UITextRange*)selectedTextRange {
-  return nil;// from <UITextInput>
+  return nil;// disable the native arrow keys
 }
 -(BOOL)hasText {
   return YES;// always enable the backspace key
@@ -521,16 +527,18 @@ static NSString* $_getTitle(VT100* terminal) {
   [activeTerminal sendKey:[timer.userInfo intValue]];
 }
 -(BOOL)canPerformAction:(SEL)action withSender:(UIMenuController*)menu {
-  BOOL cantype=self.isFirstResponder;
-  if(!cantype && !self.view.isFirstResponder){return NO;}
-  return action==@selector(paste:) || action==@selector(reflow:)
-   || (cantype && !ctrlLock && action==@selector(ctrlLock:));
+  if(!self.isFirstResponder){// keyboard is hidden
+    if(!self.view.isFirstResponder){return NO;}
+  }
+  else if(action==@selector(ctrlLock:)){return !ctrlLock;}
+  if(action==@selector(paste:)){
+    return [[UIPasteboard generalPasteboard]
+     containsPasteboardTypes:UIPasteboardTypeListString];
+  }
+  return action==@selector(reflow:);
 }
 -(void)paste:(UIMenuController*)menu {
-  UIPasteboard* pb=[UIPasteboard generalPasteboard];
-  if([pb containsPasteboardTypes:UIPasteboardTypeListString]){
-    [activeTerminal sendString:(CFStringRef)pb.string];
-  }
+  [activeTerminal sendString:(CFStringRef)[UIPasteboard generalPasteboard].string];
 }
 -(void)reflow:(UIMenuController*)menu {
   NSMutableString* content=[NSMutableString string];
