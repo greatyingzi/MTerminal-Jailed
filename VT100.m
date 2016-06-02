@@ -1,10 +1,6 @@
 #include "VT100.h"
-@interface VT100 (Private)
--(void)ptyEvent:(CFOptionFlags)events;
--(void)ptyInit;
--(void)ptyReset;
-@end
 #include <libkern/OSAtomic.h>
+#include <objc/message.h>
 #include <sys/ioctl.h>
 #include <sys/sysctl.h>
 #include <util.h>
@@ -37,7 +33,12 @@ const unichar $charsetGraphics[128]={
 };
 
 static void ptyref_callback(CFFileDescriptorRef ptyref,CFOptionFlags events,void* info) {
-  [(VT100*)info ptyEvent:events];
+  ((void(*)(id,SEL,CFOptionFlags))objc_msgSend)(info,@selector(ptyEvent:),events);
+}
+static void kqref_callback(CFFileDescriptorRef kqref,CFOptionFlags events,void* info) {
+  struct kevent event;
+  if(kevent(CFFileDescriptorGetNativeDescriptor(kqref),NULL,0,&event,1,NULL)==1)
+    CFFileDescriptorInvalidate(kqref);
 }
 static screen_line_t* screen_line_create(size_t size) {
   screen_line_t* line=calloc(1,sizeof(screen_line_t)+size);
@@ -55,6 +56,33 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
 
 @implementation VT100
 @synthesize delegate,encoding,title,processID,bellDeferred;
+-(void)ptyReset {
+  bDECBKM=false;// send delete on back arrow
+  bDECCKM=false;// send normal cursor keys
+  bDECOM=false;// disable origin mode
+  bDECAWM=true;// enable auto-wrapping
+  bDECTCEM=true;// show the cursor
+  bIRM=false;// disable insert mode
+  bLNM=false;// send CR on enter
+  bPastEOL=false;// cursor is not past end of line
+  bTrackChanges=false;// disable change tracking until next update
+  currentIndex=cursorX=cursorY=0;
+  windowTop=0;
+  windowBottom=screenHeight-1;
+  memset(&nullChar,0,sizeof(nullChar));
+  CFIndex i;
+  // reset tab stops
+  for (i=0;i<screenWidth;i++){tabstops[i]=((i%$tabWidth)==0);}
+  // reset line buffer
+  CFArrayRemoveAllValues(lineBuffer);
+  size_t size=screenWidth*sizeof(screen_char_t);
+  for (i=0;i<screenHeight;i++){
+    screen_line_t* newline=screen_line_create(size);
+    if(i==cursorY){currentLine=newline;}
+    CFArrayAppendValue(lineBuffer,newline);
+    screen_line_release(NULL,newline);
+  }
+}
 -(id)initWithWidth:(CFIndex)_screenWidth height:(CFIndex)_screenHeight {
   if((self=[super init])){
     encoding=kCFStringEncodingASCII;
@@ -66,7 +94,41 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
      .release=(CFArrayReleaseCallBack)screen_line_release});
     indexMap=CFArrayCreateMutable(NULL,0,NULL);
     linesChanged=CFSetCreateMutable(NULL,0,NULL);
-    [self ptyInit];
+    [self ptyReset];
+    int fd;
+    pid_t pid=forkpty(&fd,NULL,NULL,&(struct winsize){
+     .ws_col=screenWidth,.ws_row=screenHeight});
+    if(pid==-1){
+      [NSException raise:@"forkpty"
+       format:@"%d: %s",errno,strerror(errno)];
+    }
+    else if(pid==0){
+      if(execve("/usr/bin/login",(char*[]){"login","-fp",getlogin(),NULL},
+       (char*[]){"TERM=xterm",NULL})==-1){
+        [NSException raise:@"execve(login)"
+         format:@"%d: %s",errno,strerror(errno)];
+      }
+    }
+    else {
+      CFRunLoopSourceRef source;
+      CFRunLoopRef runloop=CFRunLoopGetMain();
+      processID=pid;
+      ptyref=CFFileDescriptorCreate(NULL,fd,true,
+       ptyref_callback,&(CFFileDescriptorContext){.info=self});
+      CFFileDescriptorEnableCallBacks(ptyref,kCFFileDescriptorReadCallBack);
+      source=CFFileDescriptorCreateRunLoopSource(NULL,ptyref,0);
+      CFRunLoopAddSource(runloop,source,kCFRunLoopCommonModes);
+      CFRelease(source);
+      // handle SIGCHLD
+      int kqfd=kqueue();
+      kevent(kqfd,&(struct kevent){SIGCHLD,EVFILT_SIGNAL,EV_ADD},1,NULL,0,NULL);
+      CFFileDescriptorRef kqref=CFFileDescriptorCreate(NULL,kqfd,true,kqref_callback,NULL);
+      CFFileDescriptorEnableCallBacks(kqref,kCFFileDescriptorReadCallBack);
+      source=CFFileDescriptorCreateRunLoopSource(NULL,kqref,0);
+      CFRunLoopAddSource(runloop,source,kCFRunLoopCommonModes);
+      CFRelease(source);
+      CFRelease(kqref);
+    }
   }
   return self;
 }
@@ -97,10 +159,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   return ptyref?YES:NO;
 }
 -(void)sendKey:(VT100Key)key {
-  if(!ptyref){
-    [self ptyInit];
-    return;
-  }
+  if(!ptyref){return;}
   char CSI[4]="\033[?~";
   char OSC[3]="\033O?";
   char* ptr;
@@ -123,10 +182,7 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   write(CFFileDescriptorGetNativeDescriptor(ptyref),ptr,len);
 }
 -(void)sendString:(CFStringRef)string {
-  if(!ptyref){
-    [self ptyInit];
-    return;
-  }
+  if(!ptyref){return;}
   int fd=CFFileDescriptorGetNativeDescriptor(ptyref);
   CFRange remain=CFRangeMake(0,CFStringGetLength(string));
   while(remain.length>0){
@@ -261,23 +317,18 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   int fd=CFFileDescriptorGetNativeDescriptor(ptyref);
   unsigned char databuf[4096];
   ssize_t datalen;
-  __readData:datalen=read(fd,databuf,sizeof(databuf));
-  switch(datalen){
-    case -1:
-      if(errno==EINTR){goto __readData;}
-      kill(processID,SIGKILL);
-    case 0:{
-      int status=0;
-      waitpid(processID,&status,0);
-      CFFileDescriptorInvalidate(ptyref);
-      CFRelease(ptyref);
-      ptyref=NULL;
-      datalen=sprintf((char*)databuf,"\033[m[Exit %d]\r\n"
-       "\033[1mPress any key to restart.",
-       WIFEXITED(status)?WEXITSTATUS(status):-1);
-      break;
-    }
-    default:CFFileDescriptorEnableCallBacks(ptyref,events);
+  do {datalen=read(fd,databuf,sizeof(databuf));}
+  while(datalen==-1 && errno==EINTR);
+  if(datalen>0){CFFileDescriptorEnableCallBacks(ptyref,events);}
+  else {
+    kill(processID,SIGKILL);
+    int status=0;
+    waitpid(processID,&status,0);
+    CFFileDescriptorInvalidate(ptyref);
+    CFRelease(ptyref);
+    ptyref=NULL;
+    datalen=sprintf((char*)databuf,"\033[m[Exit %d]\r\n",
+     WIFEXITED(status)?WEXITSTATUS(status):-1);
   }
   BOOL notify=[delegate terminalShouldReportChanges:self];
   if(bTrackChanges){
@@ -959,108 +1010,53 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
       else {bPastEOL=true;}
     }
   }
-  if(!notify){
-    if(bell){bellDeferred=YES;}
-    return;
-  }
-  // compute changes and notify delegate
-  if(bTrackChanges){
-    CFIndex count=CFArrayGetCount(indexMap),i;
-    CFMutableSetRef deletions=CFSetCreateMutable(NULL,count,NULL);
-    CFMutableSetRef insertions=CFSetCreateMutable(NULL,count,NULL);
-    bool colchanged=prevCursorX!=cursorX;
-    CFIndex jnext=0,jcursor=prevCursorY,top=indexTop;
-    CFIndex inext=0,icursor=bDECTCEM?currentIndex-top:-1;
-    for (i=0;i<=count;i++){
-      CFIndex j=(i==count)?screenHeight:
-       (CFIndex)CFArrayGetValueAtIndex(indexMap,i);
-      if(j==-1){CFSetAddValue(insertions,(void*)(top+i));}
-      else {
-        while(jnext<j){
-          CFIndex delindex=top+jnext++;
-          if(inext<i){
-            CFSetRemoveValue(insertions,(void*)(top+inext++));
-            CFSetAddValue(linesChanged,(void*)delindex);
+  if(notify){
+    // compute changes and notify delegate
+    if(bTrackChanges){
+      CFIndex count=CFArrayGetCount(indexMap),i;
+      CFMutableSetRef deletions=CFSetCreateMutable(NULL,count,NULL);
+      CFMutableSetRef insertions=CFSetCreateMutable(NULL,count,NULL);
+      bool colchanged=prevCursorX!=cursorX;
+      CFIndex jnext=0,jcursor=prevCursorY,top=indexTop;
+      CFIndex inext=0,icursor=bDECTCEM?currentIndex-top:-1;
+      for (i=0;i<=count;i++){
+        CFIndex j=(i==count)?screenHeight:
+         (CFIndex)CFArrayGetValueAtIndex(indexMap,i);
+        if(j==-1){CFSetAddValue(insertions,(void*)(top+i));}
+        else {
+          while(jnext<j){
+            CFIndex delindex=top+jnext++;
+            if(inext<i){
+              CFSetRemoveValue(insertions,(void*)(top+inext++));
+              CFSetAddValue(linesChanged,(void*)delindex);
+            }
+            else {
+              CFSetRemoveValue(linesChanged,(void*)delindex);
+              CFSetAddValue(deletions,(void*)delindex);
+            }
           }
-          else {
-            CFSetRemoveValue(linesChanged,(void*)delindex);
-            CFSetAddValue(deletions,(void*)delindex);
+          jnext++;
+          inext=i+1;
+          if(colchanged?(i==icursor || j==jcursor):
+           ((i==icursor)!=(j==jcursor))){
+            // erase or redraw cursor
+            CFSetAddValue(linesChanged,(void*)(top+j));
           }
-        }
-        jnext++;
-        inext=i+1;
-        if(colchanged?(i==icursor || j==jcursor):
-         ((i==icursor)!=(j==jcursor))){
-          // erase or redraw cursor
-          CFSetAddValue(linesChanged,(void*)(top+j));
         }
       }
+      [delegate terminal:self changed:linesChanged
+       deleted:deletions inserted:insertions bell:bell];
+      CFRelease(deletions);
+      CFRelease(insertions);
     }
-    [delegate terminal:self changed:linesChanged
-     deleted:deletions inserted:insertions bell:bell];
-    CFRelease(deletions);
-    CFRelease(insertions);
-  }
-  else {
-    [delegate terminal:self changed:NULL
-     deleted:NULL inserted:NULL bell:bell];
-    bTrackChanges=true;
-  }
-  bellDeferred=NO;
-}
--(void)ptyInit {
-  [self ptyReset];
-  int fd;
-  pid_t pid=forkpty(&fd,NULL,NULL,&(struct winsize){
-   .ws_col=screenWidth,.ws_row=screenHeight});
-  if(pid==-1){
-    [NSException raise:@"forkpty"
-     format:@"%d: %s",errno,strerror(errno)];
-    return;
-  }
-  else if(pid==0){
-    if(execve("/usr/bin/login",
-     (char*[]){"login","-fp",getenv("USER")?:"mobile",NULL},
-     (char*[]){"TERM=xterm",NULL})==-1){
-      [NSException raise:@"execve(login)"
-       format:@"%d: %s",errno,strerror(errno)];
+    else {
+      [delegate terminal:self changed:NULL
+       deleted:NULL inserted:NULL bell:bell];
+      bTrackChanges=true;
     }
-    return;
+    bellDeferred=NO;
   }
-  processID=pid;
-  ptyref=CFFileDescriptorCreate(NULL,fd,true,
-   ptyref_callback,&(CFFileDescriptorContext){.info=self});
-  CFFileDescriptorEnableCallBacks(ptyref,kCFFileDescriptorReadCallBack);
-  CFRunLoopSourceRef source=CFFileDescriptorCreateRunLoopSource(NULL,ptyref,0);
-  CFRunLoopAddSource(CFRunLoopGetMain(),source,kCFRunLoopCommonModes);
-  CFRelease(source);
-}
--(void)ptyReset {
-  bDECBKM=false;// send delete on back arrow
-  bDECCKM=false;// send normal cursor keys
-  bDECOM=false;// disable origin mode
-  bDECAWM=true;// enable auto-wrapping
-  bDECTCEM=true;// show the cursor
-  bIRM=false;// disable insert mode
-  bLNM=false;// send CR on enter
-  bPastEOL=false;// cursor is not past end of line
-  bTrackChanges=false;// disable change tracking until next update
-  currentIndex=cursorX=cursorY=0;
-  windowTop=0;
-  windowBottom=screenHeight-1;
-  memset(&nullChar,0,sizeof(nullChar));
-  CFIndex i;
-  // reset tab stops
-  for (i=0;i<screenWidth;i++){tabstops[i]=((i%$tabWidth)==0);}
-  // reset line buffer
-  CFArrayRemoveAllValues(lineBuffer);
-  size_t size=screenWidth*sizeof(screen_char_t);
-  for (i=0;i<screenHeight;i++){
-    screen_line_t* newline=screen_line_create(size);
-    if(i==cursorY){currentLine=newline;}
-    CFArrayAppendValue(lineBuffer,newline);
-    screen_line_release(NULL,newline);
-  }
+  else if(bell){bellDeferred=YES;}
 }
 -(void)dealloc {
   if(ptyref){

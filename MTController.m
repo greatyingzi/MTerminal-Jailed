@@ -10,9 +10,13 @@
 -(void)setShift:(BOOL)shift;
 @end
 
+@interface UIApplication (Private)
+-(void)suspend;
+@end
+
 static CGColorRef $_createRGBColor(CGColorSpaceRef rgbspace,CFMutableDictionaryRef unique,NSString* str,unsigned int v) {
   if(str){[[NSScanner scannerWithString:str] scanHexInt:&v];}
-  const void* existing=CFDictionaryGetValue(unique,(void*)(v&0xffffff));
+  const void* existing=CFDictionaryGetValue(unique,(void*)(long)(v&0xffffff));
   return existing?(CGColorRef)CFRetain(existing):
    CGColorCreate(rgbspace,(CGFloat[]){
    ((v>>16)&0xff)/255.,((v>>8)&0xff)/255.,(v&0xff)/255.,1});
@@ -55,7 +59,7 @@ static NSString* $_getTitle(VT100* terminal) {
   if(title){return (NSString*)title;}
   title=[terminal copyProcessName];
   NSString* tstr=(title && CFStringGetLength(title))?
-   [NSString stringWithFormat:@"<%@>",title]:@"<?>";
+   [NSString stringWithFormat:@"<%@>",title]:@"---";
   if(title){CFRelease(title);}
   return tstr;
 }
@@ -82,7 +86,7 @@ static NSString* $_getTitle(VT100* terminal) {
         CGFloat g=gv/255.;gv<<=8;
         for (k=0;k<6;k++){
           unsigned int bv=cvalues[k];
-          CFDictionaryAddValue(unique,(void*)(rv|gv|bv),
+          CFDictionaryAddValue(unique,(void*)(long)(rv|gv|bv),
            colorTable[z++]=CGColorCreate(rgbspace,(CGFloat[]){r,g,bv/255.,1}));
         }
       }
@@ -90,7 +94,7 @@ static NSString* $_getTitle(VT100* terminal) {
     for (i=0;i<24;i++){
       unsigned int cv=i*10+8;
       CGFloat c=cv/255.;
-      CFDictionaryAddValue(unique,(void*)((cv<<16)|(cv<<8)|cv),
+      CFDictionaryAddValue(unique,(void*)(long)((cv<<16)|(cv<<8)|cv),
        colorTable[z++]=CGColorCreate(rgbspace,(CGFloat[]){c,c,c,1}));
     }
     nullColor=CGColorCreate(rgbspace,(CGFloat[]){0,0,0,0});
@@ -243,19 +247,25 @@ static NSString* $_getTitle(VT100* terminal) {
   }
   else {[self animationDidStop:nil finished:nil context:tableView];}
 }
--(void)actionSheet:(UIActionSheet*)sheet clickedButtonAtIndex:(NSInteger)index {
-  if(index==sheet.cancelButtonIndex){return;}
+-(void)closeWindow {
+  [allTerminals removeObjectAtIndex:activeIndex];
   NSUInteger count=allTerminals.count;
-  if(index==sheet.destructiveButtonIndex){
-    [allTerminals removeObjectAtIndex:index=activeIndex];
-    if(--count){
-      if(index==count){index--;}
-      else {previousIndex=NSNotFound;}
-    }
+  if(count==0){[[UIApplication sharedApplication] suspend];}
+  else {
+    if(activeIndex==count){activeIndex--;}
+    else {previousIndex=NSNotFound;}
+    activeTerminal=[allTerminals objectAtIndex:activeIndex];
+    [self screenSizeDidChange];
   }
-  activeIndex=index;
-  activeTerminal=(index<count)?[allTerminals objectAtIndex:index]:nil;
-  [self screenSizeDidChange];
+}
+-(void)actionSheet:(UIActionSheet*)sheet clickedButtonAtIndex:(NSInteger)index {
+  if(index==sheet.destructiveButtonIndex){[self closeWindow];}
+  else if(index!=sheet.cancelButtonIndex){
+    activeIndex=index;
+    activeTerminal=(index<allTerminals.count)?
+     [allTerminals objectAtIndex:index]:nil;
+    [self screenSizeDidChange];
+  }
 }
 -(BOOL)canBecomeFirstResponder {
   return YES;
@@ -481,15 +491,16 @@ static NSString* $_getTitle(VT100* terminal) {
       case kTapZoneBottom:key=kVT100KeyDownArrow;break;
       case kTapZoneLeft:key=kVT100KeyLeftArrow;break;
       case kTapZoneRight:key=kVT100KeyRightArrow;break;
-      case kTapZoneTopRight:{
-        UIActionSheet* sheet=[[UIActionSheet alloc]
-         initWithTitle:nil delegate:self cancelButtonTitle:@"Cancel"
-         destructiveButtonTitle:activeTerminal.isRunning?
-         @"Force Quit":@"Close Window" otherButtonTitles:nil];
-        [sheet showInView:gesture.view];
-        [sheet release];
+      case kTapZoneTopRight:
+        if(activeTerminal.isRunning){
+          UIActionSheet* sheet=[[UIActionSheet alloc]
+           initWithTitle:nil delegate:self cancelButtonTitle:@"Cancel"
+           destructiveButtonTitle:@"Force Quit" otherButtonTitles:nil];
+          [sheet showInView:gesture.view];
+          [sheet release];
+        }
+        else {[self closeWindow];}
         return;
-      }
       case kTapZoneBottomRight:{
         UIActionSheet* sheet=[[UIActionSheet alloc]
          initWithTitle:nil delegate:self cancelButtonTitle:nil
