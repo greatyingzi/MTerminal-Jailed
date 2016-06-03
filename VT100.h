@@ -111,7 +111,7 @@ typedef struct screen_line_t {
   CFMutableSetRef linesChanged;
   CFIndex indexTop,prevCursorX,prevCursorY;
   // pty process
-  CFFileDescriptorRef ptyref;
+  int ptyfd;
 }
 @property(nonatomic,assign) id<VT100Delegate> delegate;
 @property(nonatomic,assign) CFStringEncoding encoding;

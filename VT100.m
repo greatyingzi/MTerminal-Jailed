@@ -1,6 +1,5 @@
 #include "VT100.h"
 #include <libkern/OSAtomic.h>
-#include <objc/message.h>
 #include <sys/ioctl.h>
 #include <sys/sysctl.h>
 #include <util.h>
@@ -32,14 +31,6 @@ const unichar $charsetGraphics[128]={
   0x2502,0x2264,0x2265,0x03c0,0x2260,0x00a3,0x00b7,0x007f,
 };
 
-static void ptyref_callback(CFFileDescriptorRef ptyref,CFOptionFlags events,void* info) {
-  ((void(*)(id,SEL,CFOptionFlags))objc_msgSend)(info,@selector(ptyEvent:),events);
-}
-static void kqref_callback(CFFileDescriptorRef kqref,CFOptionFlags events,void* info) {
-  struct kevent event;
-  if(kevent(CFFileDescriptorGetNativeDescriptor(kqref),NULL,0,&event,1,NULL)==1)
-    CFFileDescriptorInvalidate(kqref);
-}
 static screen_line_t* screen_line_create(size_t size) {
   screen_line_t* line=calloc(1,sizeof(screen_line_t)+size);
   line->retain_count=1;
@@ -110,24 +101,10 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
       }
     }
     else {
-      CFRunLoopSourceRef source;
-      CFRunLoopRef runloop=CFRunLoopGetMain();
       processID=pid;
-      ptyref=CFFileDescriptorCreate(NULL,fd,true,
-       ptyref_callback,&(CFFileDescriptorContext){.info=self});
-      CFFileDescriptorEnableCallBacks(ptyref,kCFFileDescriptorReadCallBack);
-      source=CFFileDescriptorCreateRunLoopSource(NULL,ptyref,0);
-      CFRunLoopAddSource(runloop,source,kCFRunLoopCommonModes);
-      CFRelease(source);
-      // handle SIGCHLD
-      int kqfd=kqueue();
-      kevent(kqfd,&(struct kevent){SIGCHLD,EVFILT_SIGNAL,EV_ADD},1,NULL,0,NULL);
-      CFFileDescriptorRef kqref=CFFileDescriptorCreate(NULL,kqfd,true,kqref_callback,NULL);
-      CFFileDescriptorEnableCallBacks(kqref,kCFFileDescriptorReadCallBack);
-      source=CFFileDescriptorCreateRunLoopSource(NULL,kqref,0);
-      CFRunLoopAddSource(runloop,source,kCFRunLoopCommonModes);
-      CFRelease(source);
-      CFRelease(kqref);
+      ptyfd=fd;
+      [NSThread detachNewThreadSelector:@selector(ptySelectLoop)
+       toTarget:self withObject:nil];
     }
   }
   return self;
@@ -143,11 +120,10 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   return line->buf;
 }
 -(CFStringRef)copyProcessName {
-  if(ptyref){
+  if(ptyfd!=-1){
     struct kinfo_proc kp;
     size_t kpsize=sizeof(struct kinfo_proc);
-    if(sysctl((int[]){CTL_KERN,KERN_PROC,KERN_PROC_PGRP,
-     tcgetpgrp(CFFileDescriptorGetNativeDescriptor(ptyref))},
+    if(sysctl((int[]){CTL_KERN,KERN_PROC,KERN_PROC_PGRP,tcgetpgrp(ptyfd)},
      4,&kp,&kpsize,NULL,0)!=-1){
       return CFStringCreateWithFileSystemRepresentation(NULL,
        kp.kp_proc.p_comm);// MAXCOMLEN=16
@@ -156,10 +132,10 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   return NULL;
 }
 -(BOOL)isRunning {
-  return ptyref?YES:NO;
+  return (ptyfd==-1)?NO:YES;
 }
 -(void)sendKey:(VT100Key)key {
-  if(!ptyref){return;}
+  if(ptyfd==-1){return;}
   char CSI[4]="\033[?~";
   char OSC[3]="\033O?";
   char* ptr;
@@ -179,18 +155,17 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
     case kVT100KeyEnd:(ptr=bDECCKM?OSC:CSI)[2]='F';len=3;break;
     default:ptr=(char[]){key};len=1;break;
   }
-  write(CFFileDescriptorGetNativeDescriptor(ptyref),ptr,len);
+  write(ptyfd,ptr,len);
 }
 -(void)sendString:(CFStringRef)string {
-  if(!ptyref){return;}
-  int fd=CFFileDescriptorGetNativeDescriptor(ptyref);
+  if(ptyfd==-1){return;}
   CFRange remain=CFRangeMake(0,CFStringGetLength(string));
   while(remain.length>0){
     UInt8 buf[4096];
     CFIndex len;
     CFIndex nconv=CFStringGetBytes(string,remain,
      encoding,'?',false,buf,sizeof(buf),&len);
-    write(fd,buf,len);
+    write(ptyfd,buf,len);
     remain.location+=nconv;
     remain.length-=nconv;
   }
@@ -260,8 +235,8 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   screenHeight=newHeight;
   [self setCurrentLine];
   // resize the pty
-  if(ptyref && ioctl(CFFileDescriptorGetNativeDescriptor(ptyref),
-   TIOCSWINSZ,&(struct winsize){.ws_col=newWidth,.ws_row=newHeight})==-1){
+  if(ptyfd!=-1 && ioctl(ptyfd,TIOCSWINSZ,
+   &(struct winsize){.ws_col=newWidth,.ws_row=newHeight})==-1){
     [NSException raise:@"ioctl(TIOCSWINSZ)"
      format:@"%d: %s",errno,strerror(errno)];
   }
@@ -313,22 +288,40 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
     [self setCurrentLine];
   }
 }
--(void)ptyEvent:(CFOptionFlags)events {
-  int fd=CFFileDescriptorGetNativeDescriptor(ptyref);
+-(void)ptySelectLoop {
+  fd_set readfds;
+  FD_ZERO(&readfds);
+  FD_SET(ptyfd,&readfds);
+  do {
+    if(select(ptyfd+1,&readfds,NULL,NULL,NULL)==-1){
+      if(errno==EINTR){continue;}
+      [NSException raise:@"select"
+       format:@"%d: %s",errno,strerror(errno)];
+    }
+    [self performSelectorOnMainThread:@selector(ptyRead)
+     withObject:nil waitUntilDone:YES];
+  } while(ptyfd!=-1);
+}
+-(void)ptyRead {
+  int fd=ptyfd;
   unsigned char databuf[4096];
   ssize_t datalen;
-  do {datalen=read(fd,databuf,sizeof(databuf));}
-  while(datalen==-1 && errno==EINTR);
-  if(datalen>0){CFFileDescriptorEnableCallBacks(ptyref,events);}
-  else {
-    kill(processID,SIGKILL);
-    int status=0;
-    waitpid(processID,&status,0);
-    CFFileDescriptorInvalidate(ptyref);
-    CFRelease(ptyref);
-    ptyref=NULL;
-    datalen=sprintf((char*)databuf,"\033[m[Exit %d]\r\n",
-     WIFEXITED(status)?WEXITSTATUS(status):-1);
+  while(1){
+    switch((datalen=read(fd,databuf,sizeof(databuf)))){
+      case -1:
+        if(errno==EINTR){continue;}
+        kill(processID,SIGKILL);
+      case 0:
+        close(fd);
+        ptyfd=-1;
+        int status=0;
+        waitpid(processID,&status,0);
+        datalen=WIFEXITED(status)?sprintf((char*)databuf,
+         "\033[1m[Exit %d]\r\n",WEXITSTATUS(status)):
+         WIFSIGNALED(status)?sprintf((char*)databuf,
+         "\033[1;31m[%s]\r\n",strsignal(WTERMSIG(status))):0;
+    }
+    break;
   }
   BOOL notify=[delegate terminalShouldReportChanges:self];
   if(bTrackChanges){
@@ -1059,10 +1052,9 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   else if(bell){bellDeferred=YES;}
 }
 -(void)dealloc {
-  if(ptyref){
+  if(ptyfd){
     kill(processID,SIGKILL);
-    CFFileDescriptorInvalidate(ptyref);
-    CFRelease(ptyref);
+    close(ptyfd);
   }
   if(CSIParams){CFRelease(CSIParams);}
   if(OSCString){CFRelease(OSCString);}
