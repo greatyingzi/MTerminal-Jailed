@@ -33,11 +33,9 @@
 }
 -(void)keyboardWillChange:(NSNotification*)note {
   if([note.name isEqualToString:UIKeyboardWillShowNotification]){
-    CGRect frame=[[note.userInfo
-     objectForKey:UIKeyboardFrameEndUserInfoKey] CGRectValue];
-    kbHeight=UIInterfaceOrientationIsPortrait(
-     [UIApplication sharedApplication].statusBarOrientation)?
-     frame.size.height:frame.size.width;
+    CGRect frame=[self.view convertRect:[[note.userInfo
+     objectForKey:UIKeyboardFrameEndUserInfoKey] CGRectValue] fromView:nil];
+    kbHeight=frame.size.height;
   }
   else {kbHeight=0;}
   if(!deferAdjust){[self adjustContentInset];}

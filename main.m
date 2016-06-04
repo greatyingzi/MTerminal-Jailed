@@ -1,6 +1,3 @@
-int main(int argc,char** argv) {
-  NSAutoreleasePool* pool=[[NSAutoreleasePool alloc] init];
-  int retval=UIApplicationMain(argc,argv,nil,@"MTAppDelegate");
-  [pool drain];
-  return retval;
-}
+int main(int argc,char** argv) {@autoreleasepool {
+  return UIApplicationMain(argc,argv,nil,@"MTAppDelegate");
+}}

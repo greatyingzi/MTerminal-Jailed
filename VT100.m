@@ -1,9 +1,11 @@
 #include "VT100.h"
 #include <libkern/OSAtomic.h>
 #include <pthread.h>
+#include <sys/event.h>
 #include <sys/ioctl.h>
-#include <sys/sysctl.h>
 #include <util.h>
+
+extern int proc_pidpath(pid_t,char*,uint32_t);
 
 const char $DA[]="\033[?1;2c";
 const char $DA2[]="\033[>61;20;1c";
@@ -152,16 +154,11 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   return line->buf;
 }
 -(CFStringRef)copyProcessName {
-  if(ptyfd!=-1){
-    struct kinfo_proc kp;
-    size_t kpsize=sizeof(struct kinfo_proc);
-    if(sysctl((int[]){CTL_KERN,KERN_PROC,KERN_PROC_PGRP,
-     tcgetpgrp(ptyfd)},4,&kp,&kpsize,NULL,0)!=-1){
-      return CFStringCreateWithFileSystemRepresentation(NULL,
-       kp.kp_proc.p_comm);// MAXCOMLEN=16
-    }
-  }
-  return NULL;
+  if(ptyfd==-1){return NULL;}
+  char buf[4096]={0};
+  proc_pidpath(tcgetpgrp(ptyfd),buf,sizeof(buf));
+  char* ptr=strrchr(buf,'/');
+  return CFStringCreateWithFileSystemRepresentation(NULL,ptr?ptr+1:buf);
 }
 -(BOOL)isRunning {
   return (ptyfd==-1)?NO:YES;

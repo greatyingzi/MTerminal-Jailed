@@ -279,6 +279,9 @@ static NSString* $_getTitle(VT100* terminal) {
 -(UITextAutocorrectionType)autocorrectionType {
   return UITextAutocorrectionTypeNo;
 }
+-(BOOL)isSecureTextEntry {
+  return YES;// disable dictation
+}
 -(UITextRange*)selectedTextRange {
   return nil;// disable the native arrow keys
 }
