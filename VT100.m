@@ -1,5 +1,6 @@
 #include "VT100.h"
 #include <libkern/OSAtomic.h>
+#include <pthread.h>
 #include <sys/ioctl.h>
 #include <sys/sysctl.h>
 #include <util.h>
@@ -31,6 +32,25 @@ const unichar $charsetGraphics[128]={
   0x2502,0x2264,0x2265,0x03c0,0x2260,0x00a3,0x00b7,0x007f,
 };
 
+static void raiseException(NSString* name) {
+  [NSException raise:name format:@"%d: %s",errno,strerror(errno)];
+}
+static void* kqRunEventLoop(void* context) {
+  int kqfd=*(int*)context;
+  while(1){
+    struct kevent events[8];
+    int count=kevent(kqfd,NULL,0,events,
+     sizeof(events)/sizeof(struct kevent),NULL),i;
+    if(count==-1){raiseException(@"kevent");}
+    for (i=0;i<count;i++){
+      if(events[i].filter==EVFILT_READ)
+        [(id)events[i].udata
+         performSelectorOnMainThread:@selector(ptyRead)
+         withObject:nil waitUntilDone:YES];
+    }
+  }
+  return NULL;
+}
 static screen_line_t* screen_line_create(size_t size) {
   screen_line_t* line=calloc(1,sizeof(screen_line_t)+size);
   line->retain_count=1;
@@ -89,22 +109,34 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
     int fd;
     pid_t pid=forkpty(&fd,NULL,NULL,&(struct winsize){
      .ws_col=screenWidth,.ws_row=screenHeight});
-    if(pid==-1){
-      [NSException raise:@"forkpty"
-       format:@"%d: %s",errno,strerror(errno)];
-    }
+    if(pid==-1){raiseException(@"forkpty");}
     else if(pid==0){
-      if(execve("/usr/bin/login",(char*[]){"login","-fp",getlogin(),NULL},
-       (char*[]){"TERM=xterm",NULL})==-1){
-        [NSException raise:@"execve(login)"
-         format:@"%d: %s",errno,strerror(errno)];
-      }
+      if(execve("/usr/bin/login",
+       (char*[]){"login","-fp",getlogin(),NULL},
+       (char*[]){"TERM=xterm",NULL})==-1)
+        raiseException(@"execve(login)");
     }
     else {
+      static int kqfd=-1;
+      Boolean first=(kqfd==-1);
+      // create singleton kqueue
+      if(first && (kqfd=kqueue())==-1){raiseException(@"kqueue");}
+      struct kevent changes[2];
+      // register this pty
+      EV_SET(&changes[0],fd,EVFILT_READ,EV_ADD,0,0,self);
+      // first, register an event to reload the kevent loop
+      // then on subsequent calls, trigger the reload event
+      EV_SET(&changes[1],0,EVFILT_USER,first?EV_ADD|EV_CLEAR:0,
+       first?NOTE_FFNOP:NOTE_TRIGGER,0,NULL);
+      if(kevent(kqfd,changes,2,NULL,0,NULL)){raiseException(@"kevent");}
+      if(first){// detach a separate thread to run the event loop
+        pthread_t thread;
+        if(pthread_create(&thread,NULL,kqRunEventLoop,&kqfd))
+          raiseException(@"pthread_create");
+        pthread_detach(thread);
+      }
       processID=pid;
       ptyfd=fd;
-      [NSThread detachNewThreadSelector:@selector(ptySelectLoop)
-       toTarget:self withObject:nil];
     }
   }
   return self;
@@ -123,8 +155,8 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   if(ptyfd!=-1){
     struct kinfo_proc kp;
     size_t kpsize=sizeof(struct kinfo_proc);
-    if(sysctl((int[]){CTL_KERN,KERN_PROC,KERN_PROC_PGRP,tcgetpgrp(ptyfd)},
-     4,&kp,&kpsize,NULL,0)!=-1){
+    if(sysctl((int[]){CTL_KERN,KERN_PROC,KERN_PROC_PGRP,
+     tcgetpgrp(ptyfd)},4,&kp,&kpsize,NULL,0)!=-1){
       return CFStringCreateWithFileSystemRepresentation(NULL,
        kp.kp_proc.p_comm);// MAXCOMLEN=16
     }
@@ -236,10 +268,8 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
   [self setCurrentLine];
   // resize the pty
   if(ptyfd!=-1 && ioctl(ptyfd,TIOCSWINSZ,
-   &(struct winsize){.ws_col=newWidth,.ws_row=newHeight})==-1){
-    [NSException raise:@"ioctl(TIOCSWINSZ)"
-     format:@"%d: %s",errno,strerror(errno)];
-  }
+   &(struct winsize){.ws_col=newWidth,.ws_row=newHeight})==-1)
+    raiseException(@"ioctl(TIOCSWINSZ)");
 }
 -(void)changedLineAtIndex:(CFIndex)index {
   if(bTrackChanges){
@@ -287,20 +317,6 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
     cursorY++;
     [self setCurrentLine];
   }
-}
--(void)ptySelectLoop {
-  fd_set readfds;
-  FD_ZERO(&readfds);
-  FD_SET(ptyfd,&readfds);
-  do {
-    if(select(ptyfd+1,&readfds,NULL,NULL,NULL)==-1){
-      if(errno==EINTR){continue;}
-      [NSException raise:@"select"
-       format:@"%d: %s",errno,strerror(errno)];
-    }
-    [self performSelectorOnMainThread:@selector(ptyRead)
-     withObject:nil waitUntilDone:YES];
-  } while(ptyfd!=-1);
 }
 -(void)ptyRead {
   int fd=ptyfd;
