@@ -15,8 +15,7 @@
     const int nkeys=sizeof(keys)/sizeof(NSString*);
     NSMutableDictionary* msettings=[NSMutableDictionary
      dictionaryWithCapacity:nkeys];
-    for (NSString* keyvalue in [URL.resourceSpecifier
-     componentsSeparatedByString:@"&"]){
+    for (NSString* keyvalue in [URL.query componentsSeparatedByString:@"&"]){
       NSUInteger pos=[keyvalue rangeOfString:@"="].location;
       if(pos==NSNotFound || pos==0 || pos==keyvalue.length-1){continue;}
       NSString* key=[keyvalue substringToIndex:pos];
