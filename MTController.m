@@ -81,7 +81,7 @@ static NSString* getTitle(VT100* terminal) {
     // set up colors
     CGColorSpaceRef rgbspace=CGColorSpaceCreateDeviceRGB();
     CFMutableDictionaryRef cdict=CFDictionaryCreateMutable(NULL,0,NULL,NULL);
-    const unsigned char cvalues[]={0,0x5f,0x87,0xaf,0xd7,1};
+    const unsigned char cvalues[]={0,0x5f,0x87,0xaf,0xd7,0xff};
     unsigned int i,z=16;
     for (i=0;i<6;i++){
       unsigned int rv=cvalues[i],j;
