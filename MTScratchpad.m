@@ -1,12 +1,12 @@
 #include "MTScratchpad.h"
 
 @implementation MTScratchpad
--(id)initWithTitle:(NSString*)title content:(NSString*)_content font:(UIFont*)_font textColor:(UIColor*)_textColor refController:(UIViewController*)_refController {
+-(id)initWithTitle:(NSString*)title content:(NSString*)_content font:(UIFont*)_font textColor:(UIColor*)_textColor refDelegate:(id<MTController>)_refDelegate {
   if((self=[super init])){
     content=[_content retain];
     font=[_font retain];
     textColor=[_textColor retain];
-    refController=[_refController retain];
+    refDelegate=_refDelegate;
     UINavigationItem* navitem=self.navigationItem;
     navitem.title=title;
     [navitem.leftBarButtonItem=[[UIBarButtonItem alloc]
@@ -28,10 +28,10 @@
 -(void)loadView {
   UITextView* view=[[UITextView alloc] init];
   view.editable=NO;
-  view.autocapitalizationType=UITextAutocapitalizationTypeNone;
-  view.autocorrectionType=UITextAutocorrectionTypeNo;
-  view.keyboardAppearance=UIKeyboardAppearanceDark;
-  UIScrollView* refview=(UIScrollView*)refController.view;
+  view.autocapitalizationType=refDelegate.autocapitalizationType;
+  view.autocorrectionType=refDelegate.autocorrectionType;
+  view.keyboardAppearance=refDelegate.keyboardAppearance;
+  UIScrollView* refview=refDelegate.view;
   view.indicatorStyle=refview.indicatorStyle;
   view.backgroundColor=refview.backgroundColor;
   view.text=content;
@@ -43,7 +43,6 @@
   [content release];
   [font release];
   [textColor release];
-  [refController release];
   [super dealloc];
 }
 @end

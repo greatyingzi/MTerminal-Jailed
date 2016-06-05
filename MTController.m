@@ -14,14 +14,20 @@
 -(void)suspend;
 @end
 
-static CGColorRef $_createRGBColor(CGColorSpaceRef rgbspace,CFMutableDictionaryRef unique,NSString* str,unsigned int v) {
-  if(str){[[NSScanner scannerWithString:str] scanHexInt:&v];}
-  const void* existing=CFDictionaryGetValue(unique,(void*)(long)(v&0xffffff));
-  return existing?(CGColorRef)CFRetain(existing):
-   CGColorCreate(rgbspace,(CGFloat[]){
-   ((v>>16)&0xff)/255.,((v>>8)&0xff)/255.,(v&0xff)/255.,1});
+static BOOL scanRGB(NSString* vstr,unsigned int* cv) {
+  return ([vstr isKindOfClass:[NSString class]]
+   && [[NSScanner scannerWithString:vstr] scanHexInt:cv])?
+   (*cv&=0xffffff,YES):NO;
 }
-static CGSize $_screenSize(UIScrollView* view) {
+static CGColorRef createRGBColor(CGColorSpaceRef rgbspace,CFMutableDictionaryRef cdict,unsigned int cv) {
+  CGColorRef color=(CGColorRef)CFDictionaryGetValue(cdict,(void*)(long)cv);
+  if(color){return CGColorRetain(color);}
+  CFDictionaryAddValue(cdict,(void*)(long)cv,
+   color=CGColorCreate(rgbspace,(CGFloat[]){
+   ((cv>>16)&0xff)/255.,((cv>>8)&0xff)/255.,(cv&0xff)/255.,1}));
+  return color;
+}
+static CGSize getScreenSize(UIScrollView* view) {
   CGSize size=view.bounds.size;
   UIEdgeInsets inset=view.contentInset;
   size.height-=inset.top+inset.bottom;
@@ -37,14 +43,14 @@ static enum {
   kTapZoneBottomLeft,
   kTapZoneBottom,
   kTapZoneBottomRight,
-} $_tapZone(UIGestureRecognizer* gesture,CGPoint* optr) {
+} getTapZone(UIGestureRecognizer* gesture,CGPoint* optr) {
   UIScrollView* view=(UIScrollView*)gesture.view;
   CGPoint origin=[gesture locationInView:view];
   if(optr){*optr=origin;}
   CGPoint offset=view.contentOffset;
   origin.x-=offset.x;
   origin.y-=offset.y;
-  CGSize size=$_screenSize(view);
+  CGSize size=getScreenSize(view);
   CGFloat margin=(size.width<size.height?size.width:size.height)/5;
   if(margin<60){margin=60;}
   BOOL right=(origin.x>size.width-margin);
@@ -54,7 +60,7 @@ static enum {
    (origin.x<margin)?kTapZoneBottomLeft:kTapZoneBottom:
    right?kTapZoneRight:(origin.x<margin)?kTapZoneLeft:kTapZoneCenter;
 }
-static NSString* $_getTitle(VT100* terminal) {
+static NSString* getTitle(VT100* terminal) {
   CFStringRef title=terminal.title;
   if(title){return (NSString*)title;}
   title=[terminal copyProcessName];
@@ -70,12 +76,11 @@ static NSString* $_getTitle(VT100* terminal) {
 @end
 
 @implementation MTController
--(id)init {
+-(id)initWithSettings:(NSDictionary*)settings {
   if((self=[super init])){
-    // set up color palette
-    NSUserDefaults* defaults=[NSUserDefaults standardUserDefaults];
+    // set up colors
     CGColorSpaceRef rgbspace=CGColorSpaceCreateDeviceRGB();
-    CFMutableDictionaryRef unique=CFDictionaryCreateMutable(NULL,0,NULL,NULL);
+    CFMutableDictionaryRef cdict=CFDictionaryCreateMutable(NULL,0,NULL,NULL);
     const unsigned char cvalues[]={0,0x5f,0x87,0xaf,0xd7,1};
     unsigned int i,z=16;
     for (i=0;i<6;i++){
@@ -86,7 +91,7 @@ static NSString* $_getTitle(VT100* terminal) {
         CGFloat g=gv/255.;gv<<=8;
         for (k=0;k<6;k++){
           unsigned int bv=cvalues[k];
-          CFDictionaryAddValue(unique,(void*)(long)(rv|gv|bv),
+          CFDictionaryAddValue(cdict,(void*)(long)(rv|gv|bv),
            colorTable[z++]=CGColorCreate(rgbspace,(CGFloat[]){r,g,bv/255.,1}));
         }
       }
@@ -94,49 +99,56 @@ static NSString* $_getTitle(VT100* terminal) {
     for (i=0;i<24;i++){
       unsigned int cv=i*10+8;
       CGFloat c=cv/255.;
-      CFDictionaryAddValue(unique,(void*)(long)((cv<<16)|(cv<<8)|cv),
+      CFDictionaryAddValue(cdict,(void*)(long)((cv<<16)|(cv<<8)|cv),
        colorTable[z++]=CGColorCreate(rgbspace,(CGFloat[]){c,c,c,1}));
     }
     nullColor=CGColorCreate(rgbspace,(CGFloat[]){0,0,0,0});
     const unsigned int xterm16[]={
-     0x000000,0xcd0000,0x00cd00,0xcdcd00,0x0000ee,0xcd00cd,0x00cdcd,0xe5e5e5,
-     0x7f7f7f,0xff0000,0x00ff00,0xffff00,0x5c5cff,0xff00ff,0x00ffff,0xffffff};
-    NSArray* palette=[defaults stringArrayForKey:@"palette"];
-    NSUInteger count=palette.count;
+     0x000000,0xaa0000,0x00aa00,0xaa5500,0x0000aa,0xaa00aa,0x00aaaa,0xaaaaaa,
+     0x555555,0xff5555,0x55ff55,0xffff55,0x5555ff,0xff55ff,0x55ffff,0xffffff};
+    NSArray* palette=[settings objectForKey:kPrefPalette];
+    NSUInteger count=[palette isKindOfClass:[NSArray class]]?palette.count:0;
+    unsigned int cv;
     for (i=0;i<16;i++){
-      colorTable[i]=$_createRGBColor(rgbspace,unique,
-       (i<count)?[palette objectAtIndex:i]:nil,xterm16[i]);
+      colorTable[i]=createRGBColor(rgbspace,cdict,
+       (i<count && scanRGB([palette objectAtIndex:i],&cv))?cv:xterm16[i]);
     }
-    bgDefault=$_createRGBColor(rgbspace,unique,
-     [defaults stringForKey:@"bgColor"],0x000000);
-    bgCursor=$_createRGBColor(rgbspace,unique,
-     [defaults stringForKey:@"bgCursorColor"],0x5f5f5f);
-    fgDefault=$_createRGBColor(rgbspace,unique,
-     [defaults stringForKey:@"fgColor"],0xd7d7d7);
-    fgBold=$_createRGBColor(rgbspace,unique,
-     [defaults stringForKey:@"fgBoldColor"],0xffffff);
-    fgCursor=$_createRGBColor(rgbspace,unique,
-     [defaults stringForKey:@"fgCursorColor"],0xe5e5e5);
+    bgDefault=scanRGB([settings objectForKey:kPrefBGDefaultColor],&cv)?
+     createRGBColor(rgbspace,cdict,cv):CGColorRetain(colorTable[0]);
+    fgDefault=scanRGB([settings objectForKey:kPrefFGDefaultColor],&cv)?
+     createRGBColor(rgbspace,cdict,cv):CGColorRetain(colorTable[7]);
+    fgBold=scanRGB([settings objectForKey:kPrefFGBoldColor],&cv)?
+     createRGBColor(rgbspace,cdict,cv):CGColorRetain(colorTable[15]);
+    bgCursor=scanRGB([settings objectForKey:kPrefBGCursorColor],&cv)?
+     createRGBColor(rgbspace,cdict,cv):CGColorRetain(fgDefault);
+    fgCursor=scanRGB([settings objectForKey:kPrefFGCursorColor],&cv)?
+     createRGBColor(rgbspace,cdict,cv):CGColorRetain(bgDefault);
     CFRelease(rgbspace);
-    CFRelease(unique);
+    CFRelease(cdict);
+    const CGFloat* bgRGB=CGColorGetComponents(bgDefault);
+    darkBG=(bgRGB[0]+bgRGB[1]+bgRGB[2]<1.5);
     // set up typeface
-    ctFont=CTFontCreateWithName(
-     (CFStringRef)[defaults stringForKey:@"fontName"]?:CFSTR("Courier"),
-     [defaults floatForKey:@"fontSize"]?:10,NULL);
-    id advance=[defaults objectForKey:@"columnWidth"];
-    unichar mchar='$';// default model character
-    if([advance isKindOfClass:[NSString class]]){
-      // use a different model character to calculate the column width
-      if([advance length]){mchar=[advance characterAtIndex:0];}
-    }
-    else if((colWidth=[advance floatValue])>0){mchar=0;}
-    if(mchar){
-      CGGlyph mglyph;
-      CTFontGetGlyphsForCharacters(ctFont,&mchar,&mglyph,1);
-      colWidth=CTFontGetAdvancesForGlyphs(ctFont,
-       kCTFontDefaultOrientation,&mglyph,NULL,1);
-    }
-    if(![defaults boolForKey:@"fontProportional"]){
+    NSString* fontName=[settings objectForKey:kPrefFontName];
+    NSNumber* fontSize=[settings objectForKey:kPrefFontSize];
+    ctFont=CTFontCreateWithName(([fontName isKindOfClass:[NSString class]]
+     && fontName.length)?(CFStringRef)fontName:CFSTR("Courier"),
+     (fontSize?fontSize.doubleValue:0)?:10,NULL);
+    // calculate column width
+    NSString* sample=[settings objectForKey:kPrefFontWidthSample];
+    NSUInteger sslength;
+    CFDictionaryRef ssattr=CFDictionaryCreate(NULL,
+     (const void**)&kCTFontAttributeName,(const void**)&ctFont,1,NULL,NULL);
+    CFAttributedStringRef ssobj=CFAttributedStringCreate(NULL,
+     ([sample isKindOfClass:[NSString class]] && (sslength=sample.length))?
+     (CFStringRef)sample:(sslength=1,CFSTR("$")),ssattr);
+    CTLineRef ssline=CTLineCreateWithAttributedString(ssobj);
+    colWidth=CTLineGetTypographicBounds(ssline,NULL,NULL,NULL)/sslength;
+    CFRelease(ssline);
+    CFRelease(ssobj);
+    CFRelease(ssattr);
+    NSNumber* proportional=[settings objectForKey:kPrefFontProportional];
+    if(![proportional isKindOfClass:[NSNumber class]]
+     || !proportional.boolValue){
       // turn off all optional ligatures
       const int values[]={kCommonLigaturesOffSelector,kRareLigaturesOffSelector,
        kLogosOffSelector,kRebusPicturesOffSelector,kDiphthongLigaturesOffSelector,
@@ -177,8 +189,7 @@ static NSString* $_getTitle(VT100* terminal) {
     glyphAscent=CTFontGetAscent(ctFont);
     glyphHeight=glyphAscent+CTFontGetDescent(ctFont);
     glyphMidY=glyphAscent-CTFontGetXHeight(ctFont)/2;
-    NSNumber* leading=[defaults objectForKey:@"lineSpacing"];
-    rowHeight=glyphHeight+(leading?leading.floatValue:CTFontGetLeading(ctFont));
+    rowHeight=glyphHeight+CTFontGetLeading(ctFont);
     CTFontSymbolicTraits traits=CTFontGetSymbolicTraits(ctFont)
      ^kCTFontBoldTrait^kCTFontItalicTrait;
     ctFontBold=CTFontCreateCopyWithSymbolicTraits(ctFont,0,NULL,
@@ -212,17 +223,10 @@ static NSString* $_getTitle(VT100* terminal) {
   return NO;
 }
 -(void)animationDidStop:(NSString*)animationID finished:(NSNumber*)finished context:(UITableView*)tableView {
-  if(animationID){
-    CGRect frame=tableView.frame;
-    frame.origin.x=0;
-    tableView.frame=frame;
-  }
-  [self terminal:activeTerminal changed:NULL
-   deleted:NULL inserted:NULL bell:NO];
 }
 -(void)screenSizeDidChange {
   UITableView* tableView=(UITableView*)self.view;
-  CGSize size=$_screenSize(tableView);
+  CGSize size=getScreenSize(tableView);
   CFIndex width=size.width/colWidth;
   CFIndex height=size.height/rowHeight;
   if(activeTerminal){[activeTerminal setWidth:width height:height];}
@@ -233,19 +237,23 @@ static NSString* $_getTitle(VT100* terminal) {
     [allTerminals insertObject:terminal atIndex:activeIndex];
     [activeTerminal=terminal release];
   }
-  if(previousIndex!=activeIndex){
-    CGRect frame=tableView.frame;
-    frame.origin.x=frame.size.width*(previousIndex==NSNotFound
-     || previousIndex<activeIndex?-1:1);
-    [UIView beginAnimations:@"ScreenTransition" context:tableView];
-    [UIView setAnimationDelegate:self];
-    [UIView setAnimationDidStopSelector:
-     @selector(animationDidStop:finished:context:)];
-    tableView.frame=frame;
-    [UIView commitAnimations];
-    previousIndex=activeIndex;
+  if(previousIndex==activeIndex){
+    [self terminal:activeTerminal changed:NULL
+     deleted:NULL inserted:NULL bell:NO];
   }
-  else {[self animationDidStop:nil finished:nil context:tableView];}
+  else {  
+    CGRect frame=tableView.frame,endFrame=frame;
+    endFrame.origin.x=frame.size.width*(previousIndex==NSNotFound
+     || previousIndex<activeIndex?-1:1);
+    previousIndex=activeIndex;
+    [UIView animateWithDuration:0.25
+     animations:^{tableView.frame=endFrame;}
+     completion:^(BOOL finished){
+      tableView.frame=frame;
+      [self terminal:activeTerminal changed:NULL
+       deleted:NULL inserted:NULL bell:NO];
+    }];
+  }
 }
 -(void)closeWindow {
   [allTerminals removeObjectAtIndex:activeIndex];
@@ -271,7 +279,7 @@ static NSString* $_getTitle(VT100* terminal) {
   return YES;
 }
 -(UIKeyboardAppearance)keyboardAppearance {
-  return UIKeyboardAppearanceDark;
+  return darkBG?UIKeyboardAppearanceDark:UIKeyboardAppearanceDefault;
 }
 -(UITextAutocapitalizationType)autocapitalizationType {
   return UITextAutocapitalizationTypeNone;
@@ -467,7 +475,7 @@ static NSString* $_getTitle(VT100* terminal) {
   UIKeyboardImpl* keyboard=[UIKeyboardImpl sharedInstance];
   BOOL shift=keyboard.isShifted;
   VT100Key key;
-  switch($_tapZone(gesture,NULL)){
+  switch(getTapZone(gesture,NULL)){
     case kTapZoneTop:key=shift?kVT100KeyPageUp:kVT100KeyUpArrow;break;
     case kTapZoneBottom:key=shift?kVT100KeyPageDown:kVT100KeyDownArrow;break;
     case kTapZoneLeft:key=shift?kVT100KeyHome:kVT100KeyLeftArrow;break;
@@ -489,7 +497,7 @@ static NSString* $_getTitle(VT100* terminal) {
     [menu setMenuVisible:NO animated:YES];
     VT100Key key;
     CGPoint origin;
-    switch($_tapZone(gesture,&origin)){
+    switch(getTapZone(gesture,&origin)){
       case kTapZoneTop:key=kVT100KeyUpArrow;break;
       case kTapZoneBottom:key=kVT100KeyDownArrow;break;
       case kTapZoneLeft:key=kVT100KeyLeftArrow;break;
@@ -512,7 +520,7 @@ static NSString* $_getTitle(VT100* terminal) {
           [sheet addButtonWithTitle:[NSString stringWithFormat:@"%@%d: %@",
            (terminal==activeTerminal)?@"\u2713 ":
            terminal.bellDeferred?@"\u2407 ":@"",
-           terminal.processID,$_getTitle(terminal)]];
+           terminal.processID,getTitle(terminal)]];
         }
         [sheet addButtonWithTitle:@"(+)"];
         sheet.cancelButtonIndex=[sheet addButtonWithTitle:@"Cancel"];
@@ -579,16 +587,16 @@ static NSString* $_getTitle(VT100* terminal) {
     NSUInteger length=content.length;
     [content deleteCharactersInRange:NSMakeRange(length-blankspan,blankspan)];
   }
-  CFStringRef fontName=CTFontCopyFullName(ctFont);
+  CFStringRef fontName=CTFontCopyPostScriptName(ctFont);
   MTScratchpad* scratch=[[MTScratchpad alloc]
-   initWithTitle:$_getTitle(activeTerminal) content:content
+   initWithTitle:getTitle(activeTerminal) content:content
    font:[UIFont fontWithName:(NSString*)fontName size:CTFontGetSize(ctFont)]
-   textColor:[UIColor colorWithCGColor:fgDefault] refController:self];
+   textColor:[UIColor colorWithCGColor:fgDefault] refDelegate:(id)self];
   CFRelease(fontName);
   UINavigationController* nav=[[UINavigationController alloc]
    initWithRootViewController:scratch];
   [scratch release];
-  nav.navigationBar.barStyle=UIBarStyleBlack;
+  nav.navigationBar.barStyle=darkBG?UIBarStyleBlack:UIBarStyleDefault;
   [self presentModalViewController:nav animated:YES];
   [nav release];
 }
@@ -598,12 +606,11 @@ static NSString* $_getTitle(VT100* terminal) {
 }
 -(void)loadView {
   UITableView* tableView=[[MTRespondingTableView alloc]
-   initWithFrame:CGRectMake(0,0,0,0) style:UITableViewStylePlain];
+   initWithFrame:CGRectZero style:UITableViewStylePlain];
   tableView.allowsSelection=NO;
   tableView.backgroundColor=[UIColor colorWithCGColor:bgDefault];
-  const CGFloat* RGB=CGColorGetComponents(bgDefault);
-  tableView.indicatorStyle=(RGB[0]>0.5 || RGB[1]>0.5 || RGB[2]>0.5)?
-   UIScrollViewIndicatorStyleBlack:UIScrollViewIndicatorStyleWhite;
+  tableView.indicatorStyle=darkBG?
+   UIScrollViewIndicatorStyleWhite:UIScrollViewIndicatorStyleBlack;
   tableView.separatorStyle=UITableViewCellSeparatorStyleNone;
   tableView.rowHeight=rowHeight;
   tableView.dataSource=self;
@@ -634,7 +641,7 @@ static NSString* $_getTitle(VT100* terminal) {
   [tableView addGestureRecognizer:holdGesture];
   [holdGesture release];
   [self.view=tableView release];
-  // add custom edit menu items
+  // add custom menu items
   UIMenuItem* reflowitem=[[UIMenuItem alloc]
    initWithTitle:@"\u2630" action:@selector(reflow:)];
   UIMenuItem* ctrlitem=[[UIMenuItem alloc]

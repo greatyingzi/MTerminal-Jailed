@@ -2,6 +2,6 @@
 
 @interface MTAppDelegate : NSObject <UIApplicationDelegate> {
   MTController* controller;
+  UIWindow* window;
 }
-@property(nonatomic,retain) UIWindow *window;
 @end
