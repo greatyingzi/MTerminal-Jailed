@@ -13,6 +13,9 @@
 -(void)applicationDidEnterBackground:(UIApplication*)application {
   if(!controller.isRunning){exit(0);}
 }
+-(UIWindow*)window {
+  return window;
+}
 -(void)dealloc {
   [window release];
   [controller release];

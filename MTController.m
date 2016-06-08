@@ -221,7 +221,7 @@ static NSString* getTitle(VT100* terminal) {
   if(prefs.bgDefault.key){
     cacheColor(colorBag,&bgDefault,createColor(colorSpace,
      scanRGB(prefs.bgDefault.value,&cv)?cv:0x000000));
-    prefs.fgCursor.key=prefs.bgDefault.key;
+    prefs.fgCursor.key=(void*)1;
     // convert RGB to YIQ, presume dark background if luma<50%
     const CGFloat* bgRGB=CGColorGetComponents(bgDefault);
     BOOL _darkBG=(bgRGB[0]*0.299+bgRGB[1]*0.587+bgRGB[2]*0.114)<0.5;
@@ -233,7 +233,7 @@ static NSString* getTitle(VT100* terminal) {
   if(chgbg || prefs.fgDefault.key){
     cacheColor(colorBag,&fgDefault,createColor(colorSpace,
      scanRGB(prefs.fgDefault.value,&cv)?cv:darkBG?0xaaaaaa:0x000000));
-    prefs.bgCursor.key=prefs.fgDefault.key;
+    prefs.bgCursor.key=(void*)1;
   }
   if(chgbg || prefs.fgBold.key){
     cacheColor(colorBag,&fgBold,createColor(colorSpace,
@@ -329,14 +329,18 @@ static NSString* getTitle(VT100* terminal) {
      traits,kCTFontBoldTrait^kCTFontItalicTrait)?:CFRetain(ctFont);
   }
   UITableView* tableView=(UITableView*)self.view;
-  tableView.backgroundColor=[UIColor colorWithCGColor:bgDefault];
+  [UIApplication sharedApplication].delegate.window.backgroundColor
+   =tableView.backgroundColor=[UIColor colorWithCGColor:bgDefault];
   tableView.indicatorStyle=darkBG?
    UIScrollViewIndicatorStyleWhite:UIScrollViewIndicatorStyleBlack;
   tableView.rowHeight=rowHeight;
   if(URL){
     if(chgbg){
+      // refresh the keyboard
+      [UIView setAnimationsEnabled:NO];
       [self resignFirstResponder];
       [self becomeFirstResponder];
+      [UIView setAnimationsEnabled:YES];
     }
     else {[self screenSizeDidChange];}
   }
