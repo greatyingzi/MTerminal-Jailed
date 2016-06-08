@@ -3,7 +3,7 @@
 
 typedef struct hspan_t {
   volatile int32_t retain_count;
-  CGFloat x,width;
+  CGFloat x,y,width;
 } hspan_t;
 
 static hspan_t* hspan_retain(CFAllocatorRef allocator,hspan_t* span) {
@@ -13,39 +13,26 @@ static hspan_t* hspan_retain(CFAllocatorRef allocator,hspan_t* span) {
 static void hspan_release(CFAllocatorRef allocator,hspan_t* span) {
   if(OSAtomicDecrement32Barrier(&span->retain_count)==0){free(span);}
 }
-static void $_appendSpan(CFMutableDictionaryRef map,CFTypeRef key,CGFloat x,CGFloat width) {
-  CFMutableArrayRef spans=(CFMutableArrayRef)CFDictionaryGetValue(map,key);
-  if(!spans){
-    spans=CFArrayCreateMutable(NULL,0,&(CFArrayCallBacks){
-     .retain=(CFArrayRetainCallBack)hspan_retain,
-     .release=(CFArrayReleaseCallBack)hspan_release});
-    CFDictionaryAddValue(map,key,spans);
-    CFRelease(spans);
-  }
-  hspan_t* span=malloc(sizeof(hspan_t));
-  span->retain_count=0;// CFArray will retain it
-  span->x=x;
-  span->width=width;
-  CFArrayAppendValue(spans,span);
-}
 
 @implementation MTRowView
--(id)initWithBackgroundColor:(CGColorRef)_bgColor ascent:(CGFloat)_glyphAscent height:(CGFloat)_glyphHeight midY:(CGFloat)_glyphMidY {
+-(id)init {
   if((self=[super init])){
-    bgColor=CGColorRetain(_bgColor);
-    glyphAscent=_glyphAscent;
-    glyphHeight=_glyphHeight;
-    glyphMidY=_glyphMidY;
     bgMap=CFDictionaryCreateMutable(NULL,0,
      &kCFTypeDictionaryKeyCallBacks,
      &kCFTypeDictionaryValueCallBacks);
     stMap=CFDictionaryCreateMutable(NULL,0,
      &kCFTypeDictionaryKeyCallBacks,
      &kCFTypeDictionaryValueCallBacks);
+    self.clearsContextBeforeDrawing=NO;
+    self.opaque=YES;
   }
   return self;
 }
--(void)renderString:(CFAttributedStringRef)string {
+-(void)renderString:(CFAttributedStringRef)string withBGColor:(CGColorRef)_bgColor  {
+  if(bgColor!=_bgColor){
+    CGColorRelease(bgColor);
+    bgColor=CGColorRetain(_bgColor);
+  }
   if(ctLine){
     CFRelease(ctLine);
     CFDictionaryRemoveAllValues(bgMap);
@@ -54,29 +41,54 @@ static void $_appendSpan(CFMutableDictionaryRef map,CFTypeRef key,CGFloat x,CGFl
   ctLine=CTLineCreateWithAttributedString(string);
   CFArrayRef runs=CTLineGetGlyphRuns(ctLine);
   CFIndex nruns=CFArrayGetCount(runs),i;
-  CGFloat x=0;
+  CGFloat x=0,y=0;
+  CFMutableDictionaryRef colormap[]={bgMap,stMap};
+  const int nmaps=sizeof(colormap)/sizeof(CFDictionaryRef);
   for (i=0;i<nruns;i++){
     CTRunRef run=CFArrayGetValueAtIndex(runs,i);
-    CGFloat width=CTRunGetTypographicBounds(run,
-     CFRangeMake(0,0),NULL,NULL,NULL);
+    CGFloat ascent,width=CTRunGetTypographicBounds(run,
+     CFRangeMake(0,0),&ascent,NULL,NULL);
     CFDictionaryRef attr=CTRunGetAttributes(run);
-    CGColorRef bgcolor=(CGColorRef)CFDictionaryGetValue(
-     attr,kMTBackgroundColorAttributeName);
-    if(bgcolor){$_appendSpan(bgMap,bgcolor,x,width);}
-    CGColorRef stcolor=(CGColorRef)CFDictionaryGetValue(
-     attr,kMTStrikethroughColorAttributeName);
-    if(stcolor){$_appendSpan(stMap,stcolor,x,width);}
+    const void* colorkey[]={
+     CFDictionaryGetValue(attr,kMTBackgroundColorAttributeName),
+     CFDictionaryGetValue(attr,kMTStrikethroughColorAttributeName)};
+    hspan_t* span=NULL;
+    int j;
+    for (j=0;j<nmaps;j++){
+      const void* key=colorkey[j];
+      if(!key){continue;}
+      CFMutableArrayRef spans=(void*)CFDictionaryGetValue(colormap[j],key);
+      if(!spans){
+        spans=CFArrayCreateMutable(NULL,0,&(CFArrayCallBacks){
+         .retain=(CFArrayRetainCallBack)hspan_retain,
+         .release=(CFArrayReleaseCallBack)hspan_release});
+        CFDictionaryAddValue(colormap[j],key,spans);
+        CFRelease(spans);
+      }
+      if(!span){
+        span=malloc(sizeof(hspan_t));
+        span->retain_count=0;// CFArray will retain it
+        span->x=x;
+        span->width=width;
+      }
+      // calculate strikethrough position if needed
+      if(j==1) span->y=ascent-CTFontGetXHeight(
+       CFDictionaryGetValue(attr,kCTFontAttributeName))/2;
+      CFArrayAppendValue(spans,span);
+    }
     x+=width;
+    y+=ascent;
   }
+  lineAscent=y/nruns;
   [self setNeedsDisplay];
 }
 -(void)drawRect:(CGRect)drawRect {
   CGContextRef context=UIGraphicsGetCurrentContext();
   CGContextSetFillColorWithColor(context,bgColor);
   CGContextFillRect(context,drawRect);
-  // draw background rectangles if necessary
+  CGFloat xmin=CGRectGetMinX(drawRect),xmax=CGRectGetMaxX(drawRect);
   CFIndex nbg=CFDictionaryGetCount(bgMap);
-  if(nbg){
+  if(nbg){// draw background rectangles as needed
     const void** keys=malloc(nbg*sizeof(CGColorRef));
     const void** values=malloc(nbg*sizeof(CFArrayRef));
     CFDictionaryGetKeysAndValues(bgMap,keys,values);
@@ -86,8 +98,10 @@ static void $_appendSpan(CFMutableDictionaryRef map,CFTypeRef key,CGFloat x,CGFl
       CGRect* rects=malloc(nvalues*sizeof(CGRect));
       for (j=0;j<nvalues;j++){
         hspan_t* span=(hspan_t*)CFArrayGetValueAtIndex(values[i],j);
-        CGRect rect=CGRectMake(span->x,0,span->width,glyphHeight);
-        if(CGRectIntersectsRect(rect,drawRect)){rects[nrects++]=rect;}
+        CGFloat x=span->x,width=span->width,xend=x+width;
+        if((x<xmin && xend<xmin) || (x>xmax && xend>xmax)){continue;}
+        rects[nrects++]=CGRectMake(x,drawRect.origin.y,
+         width,drawRect.size.height);
       }
       if(nrects){
         CGContextSetFillColorWithColor(context,(CGColorRef)keys[i]);
@@ -98,34 +112,31 @@ static void $_appendSpan(CFMutableDictionaryRef map,CFTypeRef key,CGFloat x,CGFl
     free(keys);
     free(values);
   }
-  // draw correctly oriented text
-  CGContextSetTextMatrix(context,CGAffineTransformMake(1,0,0,-1,0,0));
-  CGContextSetTextPosition(context,0,glyphAscent);
+  CGContextSetTextMatrix(context,
+   CGAffineTransformMake(1,0,0,-1,0,lineAscent));
   CTLineDraw(ctLine,context);
-  // draw strikethrough lines if necessary
   CFIndex nst=CFDictionaryGetCount(stMap);
-  if(nst && glyphMidY>=CGRectGetMinY(drawRect)
-   && glyphMidY<=CGRectGetMaxY(drawRect)){
+  if(nst){// draw strikethrough lines as needed
     const void** keys=malloc(nst*sizeof(CGColorRef));
     const void** values=malloc(nst*sizeof(CFArrayRef));
     CFDictionaryGetKeysAndValues(stMap,keys,values);
-    CGFloat xmin=CGRectGetMinX(drawRect),xmax=CGRectGetMaxX(drawRect);
+    CGFloat ymin=CGRectGetMinY(drawRect),ymax=CGRectGetMaxY(drawRect);
     CFIndex i;
     for (i=0;i<nst;i++){
       CFIndex nvalues=CFArrayGetCount(values[i]),j;
       BOOL first=YES;
       for (j=0;j<nvalues;j++){
         hspan_t* span=(hspan_t*)CFArrayGetValueAtIndex(values[i],j);
-        CGFloat xstart=span->x,xend=xstart+span->width;
-        if((xstart>=xmin || xend>=xmin) && (xstart<=xmax || xend<=xmax)){
-          if(first){
-            CGContextSetStrokeColorWithColor(context,(CGColorRef)keys[i]);
-            first=NO;
-          }
-          CGContextMoveToPoint(context,xstart,glyphMidY);
-          CGContextAddLineToPoint(context,xend,glyphMidY);
-          CGContextStrokePath(context);
+        CGFloat x=span->x,xend=x+span->width,y=span->y;
+        if((x<xmin && xend<xmin) || (x>xmax && xend>xmax)
+         || y<ymin || y>ymax){continue;}
+        if(first){
+          CGContextSetStrokeColorWithColor(context,(CGColorRef)keys[i]);
+          first=NO;
         }
+        CGContextMoveToPoint(context,x,y);
+        CGContextAddLineToPoint(context,xend,y);
+        CGContextStrokePath(context);
       }
     }
     free(keys);

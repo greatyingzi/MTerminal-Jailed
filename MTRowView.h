@@ -5,10 +5,9 @@
 
 @interface MTRowView : UIView {
   CGColorRef bgColor;
-  CGFloat glyphAscent,glyphHeight,glyphMidY;
   CTLineRef ctLine;
+  CGFloat lineAscent;
   CFMutableDictionaryRef bgMap,stMap;
 }
--(id)initWithBackgroundColor:(CGColorRef)_bgColor ascent:(CGFloat)_glyphAscent height:(CGFloat)_glyphHeight midY:(CGFloat)_glyphMidY;
--(void)renderString:(CFAttributedStringRef)string;
+-(void)renderString:(CFAttributedStringRef)string withBGColor:(CGColorRef)_bgColor;
 @end

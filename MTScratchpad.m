@@ -1,14 +1,12 @@
 #include "MTScratchpad.h"
 
 @implementation MTScratchpad
--(id)initWithTitle:(NSString*)title content:(NSString*)_content font:(UIFont*)_font textColor:(UIColor*)_textColor refDelegate:(id<MTController>)_refDelegate {
+-(id)initWithText:(NSString*)_text fontSize:(CGFloat)_fontSize darkBG:(BOOL)_darkBG {
   if((self=[super init])){
-    content=[_content retain];
-    font=[_font retain];
-    textColor=[_textColor retain];
-    refDelegate=_refDelegate;
+    text=[_text retain];
+    fontSize=_fontSize;
+    darkBG=_darkBG;
     UINavigationItem* navitem=self.navigationItem;
-    navitem.title=title;
     [navitem.leftBarButtonItem=[[UIBarButtonItem alloc]
      initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
      target:self action:@selector(dismiss)] release];
@@ -17,7 +15,7 @@
   return self;
 }
 -(void)dismiss {
-  [self dismissViewControllerAnimated:YES completion:NULL];
+  [self dismissModalViewControllerAnimated:YES];
 }
 -(void)setEditing:(BOOL)editing animated:(BOOL)animated {
   [super setEditing:editing animated:animated];
@@ -28,21 +26,20 @@
 -(void)loadView {
   UITextView* view=[[UITextView alloc] init];
   view.editable=NO;
-  view.autocapitalizationType=refDelegate.autocapitalizationType;
-  view.autocorrectionType=refDelegate.autocorrectionType;
-  view.keyboardAppearance=refDelegate.keyboardAppearance;
-  UIScrollView* refview=refDelegate.view;
-  view.indicatorStyle=refview.indicatorStyle;
-  view.backgroundColor=refview.backgroundColor;
-  view.text=content;
-  view.font=font;
-  view.textColor=textColor;
+  view.autocapitalizationType=UITextAutocapitalizationTypeNone;
+  view.autocorrectionType=UITextAutocorrectionTypeNo;
+  view.keyboardAppearance=darkBG?
+   UIKeyboardAppearanceDark:UIKeyboardAppearanceDefault;
+  view.backgroundColor=darkBG?[UIColor blackColor]:[UIColor whiteColor];
+  view.textColor=darkBG?[UIColor lightTextColor]:[UIColor darkTextColor];
+  view.indicatorStyle=darkBG?
+   UIScrollViewIndicatorStyleWhite:UIScrollViewIndicatorStyleBlack;
+  view.font=[UIFont fontWithName:@"Courier" size:fontSize];
+  view.text=text;
   [self.view=view release];
 }
 -(void)dealloc {
-  [content release];
-  [font release];
-  [textColor release];
+  [text release];
   [super dealloc];
 }
 @end

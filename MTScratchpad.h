@@ -1,14 +1,9 @@
 #import "MTKBAvoiding.h"
 
-@protocol MTController <UIKeyInput>
--(UIScrollView*)view;
-@end
-
 @interface MTScratchpad : MTKBAvoiding {
-  NSString* content;
-  UIFont* font;
-  UIColor* textColor;
-  id<MTController> refDelegate;
+  NSString* text;
+  CGFloat fontSize;
+  BOOL darkBG;
 }
--(id)initWithTitle:(NSString*)title content:(NSString*)_content font:(UIFont*)_font textColor:(UIColor*)_textColor refDelegate:(id<MTController>)_refDelegate;
+-(id)initWithText:(NSString*)_text fontSize:(CGFloat)_fontSize darkBG:(BOOL)_darkBG;
 @end

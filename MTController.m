@@ -19,13 +19,19 @@ static BOOL scanRGB(NSString* vstr,unsigned int* cv) {
    && [[NSScanner scannerWithString:vstr] scanHexInt:cv])?
    (*cv&=0xffffff,YES):NO;
 }
-static CGColorRef createRGBColor(CGColorSpaceRef rgbspace,CFMutableDictionaryRef cdict,unsigned int cv) {
-  CGColorRef color=(CGColorRef)CFDictionaryGetValue(cdict,(void*)(long)cv);
-  if(color){return CGColorRetain(color);}
-  CFDictionaryAddValue(cdict,(void*)(long)cv,
-   color=CGColorCreate(rgbspace,(CGFloat[]){
-   ((cv>>16)&0xff)/255.,((cv>>8)&0xff)/255.,(cv&0xff)/255.,1}));
-  return color;
+static CGColorRef createColor(CGColorSpaceRef cspace,unsigned int cv) {
+  return CGColorCreate(cspace,(CGFloat[]){
+   (CGFloat)((cv>>16)&0xff)/0xff,(CGFloat)((cv>>8)&0xff)/0xff,
+   (CGFloat)(cv&0xff)/0xff,1});
+}
+static void cacheColor(CFMutableBagRef bag,CGColorRef* var,CGColorRef color) {
+  CFTypeRef prev=*var;
+  if(color!=prev){
+    CFBagAddValue(bag,color);
+    *var=(void*)CFBagGetValue(bag,color);
+    if(prev){CFBagRemoveValue(bag,prev);}
+  }
+  CFRelease(color);
 }
 static CGSize getScreenSize(UIScrollView* view) {
   CGSize size=view.bounds.size;
@@ -76,65 +82,188 @@ static NSString* getTitle(VT100* terminal) {
 @end
 
 @implementation MTController
--(id)initWithSettings:(NSDictionary*)settings {
+-(id)init {
   if((self=[super init])){
-    // set up colors
-    CGColorSpaceRef rgbspace=CGColorSpaceCreateDeviceRGB();
-    CFMutableDictionaryRef cdict=CFDictionaryCreateMutable(NULL,0,NULL,NULL);
-    const unsigned char cvalues[]={0,0x5f,0x87,0xaf,0xd7,0xff};
-    unsigned int i,z=16;
+    // set up color table
+    colorBag=CFBagCreateMutable(NULL,0,&kCFTypeBagCallBacks);
+    colorSpace=CGColorSpaceCreateDeviceRGB();
+    nullColor=CGColorCreate(colorSpace,(CGFloat[]){0,0,0,0});
+    const CGFloat cvfloat[6]={0,(CGFloat)0x5f/0xff,
+     (CGFloat)0x87/0xff,(CGFloat)0xaf/0xff,(CGFloat)0xd7/0xff,1};
+    unsigned int i,j,k,z=16;
+    CGFloat RGBA[4];
+    RGBA[3]=1;
     for (i=0;i<6;i++){
-      unsigned int rv=cvalues[i],j;
-      CGFloat r=rv/255.;rv<<=16;
+      RGBA[0]=cvfloat[i];
       for (j=0;j<6;j++){
-        unsigned int gv=cvalues[j],k;
-        CGFloat g=gv/255.;gv<<=8;
+        RGBA[1]=cvfloat[j];
         for (k=0;k<6;k++){
-          unsigned int bv=cvalues[k];
-          CFDictionaryAddValue(cdict,(void*)(long)(rv|gv|bv),
-           colorTable[z++]=CGColorCreate(rgbspace,(CGFloat[]){r,g,bv/255.,1}));
+          RGBA[2]=cvfloat[k];
+          CGColorRef color=CGColorCreate(colorSpace,RGBA);
+          CFBagAddValue(colorBag,colorTable[z++]=color);
+          CFRelease(color);
         }
       }
     }
     for (i=0;i<24;i++){
       unsigned int cv=i*10+8;
-      CGFloat c=cv/255.;
-      CFDictionaryAddValue(cdict,(void*)(long)((cv<<16)|(cv<<8)|cv),
-       colorTable[z++]=CGColorCreate(rgbspace,(CGFloat[]){c,c,c,1}));
+      CGFloat c=(CGFloat)cv/0xff;
+      CGColorRef color=CGColorCreate(colorSpace,(CGFloat[]){c,c,c,1});
+      CFBagAddValue(colorBag,colorTable[z++]=color);
+      CFRelease(color);
     }
-    nullColor=CGColorCreate(rgbspace,(CGFloat[]){0,0,0,0});
+    // set up text decoration attributes
+    ctUnderlineStyleSingle=CFNumberCreate(NULL,
+     kCFNumberIntType,(const int[]){kCTUnderlineStyleSingle});
+    ctUnderlineStyleDouble=CFNumberCreate(NULL,
+     kCFNumberIntType,(const int[]){kCTUnderlineStyleDouble});
+    // set up bell sound
+    CFURLRef soundURL=CFBundleCopyResourceURL(CFBundleGetMainBundle(),
+     CFSTR("bell"),CFSTR("caf"),NULL);
+    if(soundURL){
+      bellSound=AudioServicesCreateSystemSoundID(soundURL,
+       &bellSoundID)==kAudioServicesNoError;
+      CFRelease(soundURL);
+    }
+    // set up display
+    screenSection=[[NSIndexSet alloc] initWithIndex:0];
+    allTerminals=[[NSMutableArray alloc] init];
+  }
+  return self;
+}
+-(BOOL)handleOpenURL:(NSURL*)URL {
+  NSUserDefaults* defaults=[NSUserDefaults standardUserDefaults];
+  NSString* name=[NSBundle mainBundle].bundleIdentifier;
+  NSDictionary* settings=[defaults persistentDomainForName:name];
+  struct {
+    struct keyvalue {
+      NSString* key;
+      id value;
+    } palette,bgDefault,fgDefault,fgBold,bgCursor,fgCursor,
+      fontName,fontSize,fontWidthSample,fontProportional;
+  } prefs={
+    .palette={.key=@"palette"},
+    .bgDefault={.key=@"bgColor"},
+    .fgDefault={.key=@"fgColor"},
+    .fgBold={.key=@"fgBoldColor"},
+    .bgCursor={.key=@"bgCursorColor"},
+    .fgCursor={.key=@"fgCursorColor"},
+    .fontName={.key=@"fontName"},
+    .fontSize={.key=@"fontSize"},
+    .fontWidthSample={.key=@"fontWidthSample"},
+    .fontProportional={.key=@"fontProportional"},
+  };
+  struct keyvalue* preflist=(void*)&prefs;
+  const int nprefs=sizeof(prefs)/sizeof(struct keyvalue);
+  if(URL){
+    for (NSString* kvstr in [URL.query componentsSeparatedByString:@"&"]){
+      NSUInteger pos=[kvstr rangeOfString:@"="].location;
+      if(pos==NSNotFound || pos==0){continue;}
+      NSString* key=[kvstr substringToIndex:pos];
+      int i;
+      for (i=0;i<nprefs;i++){
+        struct keyvalue* kv=&preflist[i];
+        if(![key isEqualToString:kv->key]){continue;}
+        if(pos==kvstr.length-1){kv->value=(id)kCFNull;}
+        else {
+          void* ptr=(void*)kv;
+          NSString* vstr=[[kvstr substringFromIndex:pos+1]
+           stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+          kv->value=(ptr==&prefs.palette)?[vstr componentsSeparatedByString:@","]:
+           (ptr==&prefs.fontSize)?[NSNumber numberWithDouble:vstr.doubleValue]:
+           (ptr==&prefs.fontProportional)?vstr.intValue?
+           (id)kCFBooleanTrue:(id)kCFNull:vstr;
+        }
+        break;
+      }
+    }
+    NSMutableDictionary* msettings=[NSMutableDictionary
+     dictionaryWithCapacity:nprefs];
+    BOOL keep=(URL.path==nil);
+    int i;
+    for (i=0;i<nprefs;i++){
+      struct keyvalue* kv=&preflist[i];
+      NSString* key=kv->key;
+      if(!kv->value){
+        id value=[settings objectForKey:key];
+        if(keep || !value){
+          kv->key=nil;
+          if(keep){kv->value=value;}
+        }
+      }
+      else if(kv->value==(id)kCFNull){kv->value=nil;}
+      if(kv->value){[msettings setObject:kv->value forKey:key];}
+    }
+    if(msettings.count){[defaults setPersistentDomain:msettings forName:name];}
+    else {[defaults removePersistentDomainForName:name];}
+  }
+  else {
+    int i;
+    for (i=0;i<nprefs;i++){
+      struct keyvalue* kv=&preflist[i];
+      kv->value=[settings objectForKey:kv->key];
+    }  
+  }
+  unsigned int cv;
+  if(prefs.palette.key){
     const unsigned int xterm16[]={
      0x000000,0xaa0000,0x00aa00,0xaa5500,0x0000aa,0xaa00aa,0x00aaaa,0xaaaaaa,
      0x555555,0xff5555,0x55ff55,0xffff55,0x5555ff,0xff55ff,0x55ffff,0xffffff};
-    NSArray* palette=[settings objectForKey:kPrefPalette];
+    NSArray* palette=prefs.palette.value;
     NSUInteger count=[palette isKindOfClass:[NSArray class]]?palette.count:0;
-    unsigned int cv;
+    unsigned int i;
     for (i=0;i<16;i++){
-      colorTable[i]=createRGBColor(rgbspace,cdict,
-       (i<count && scanRGB([palette objectAtIndex:i],&cv))?cv:xterm16[i]);
+      cacheColor(colorBag,&colorTable[i],createColor(colorSpace,
+       (i<count && scanRGB([palette objectAtIndex:i],&cv))?cv:xterm16[i]));
     }
-    bgDefault=scanRGB([settings objectForKey:kPrefBGDefaultColor],&cv)?
-     createRGBColor(rgbspace,cdict,cv):CGColorRetain(colorTable[0]);
-    fgDefault=scanRGB([settings objectForKey:kPrefFGDefaultColor],&cv)?
-     createRGBColor(rgbspace,cdict,cv):CGColorRetain(colorTable[7]);
-    fgBold=scanRGB([settings objectForKey:kPrefFGBoldColor],&cv)?
-     createRGBColor(rgbspace,cdict,cv):CGColorRetain(colorTable[15]);
-    bgCursor=scanRGB([settings objectForKey:kPrefBGCursorColor],&cv)?
-     createRGBColor(rgbspace,cdict,cv):CGColorRetain(fgDefault);
-    fgCursor=scanRGB([settings objectForKey:kPrefFGCursorColor],&cv)?
-     createRGBColor(rgbspace,cdict,cv):CGColorRetain(bgDefault);
-    CFRelease(rgbspace);
-    CFRelease(cdict);
+  }
+  BOOL chgbg=NO;
+  if(prefs.bgDefault.key){
+    cacheColor(colorBag,&bgDefault,createColor(colorSpace,
+     scanRGB(prefs.bgDefault.value,&cv)?cv:0x000000));
+    prefs.fgCursor.key=prefs.bgDefault.key;
+    // convert RGB to YIQ, presume dark background if luma<50%
     const CGFloat* bgRGB=CGColorGetComponents(bgDefault);
-    darkBG=(bgRGB[0]+bgRGB[1]+bgRGB[2]<1.5);
-    // set up typeface
-    NSString* fontName=[settings objectForKey:kPrefFontName];
-    NSNumber* fontSize=[settings objectForKey:kPrefFontSize];
-    ctFont=CTFontCreateWithName(([fontName isKindOfClass:[NSString class]]
-     && fontName.length)?(CFStringRef)fontName:CFSTR("Courier"),
-     (fontSize?fontSize.doubleValue:0)?:10,NULL);
-    // calculate column width
-    NSString* sample=[settings objectForKey:kPrefFontWidthSample];
+    BOOL _darkBG=(bgRGB[0]*0.299+bgRGB[1]*0.587+bgRGB[2]*0.114)<0.5;
+    if(darkBG!=_darkBG){
+      darkBG=_darkBG;
+      chgbg=YES;
+    }
+  }
+  if(chgbg || prefs.fgDefault.key){
+    cacheColor(colorBag,&fgDefault,createColor(colorSpace,
+     scanRGB(prefs.fgDefault.value,&cv)?cv:darkBG?0xaaaaaa:0x000000));
+    prefs.bgCursor.key=prefs.fgDefault.key;
+  }
+  if(chgbg || prefs.fgBold.key){
+    cacheColor(colorBag,&fgBold,createColor(colorSpace,
+     scanRGB(prefs.fgBold.value,&cv)?cv:darkBG?0xffffff:0x000000));
+  }
+  if(prefs.bgCursor.key){
+    cacheColor(colorBag,&bgCursor,scanRGB(prefs.bgCursor.value,&cv)?
+     createColor(colorSpace,cv):CGColorRetain(fgDefault));
+  }
+  if(prefs.fgCursor.key){
+    cacheColor(colorBag,&fgCursor,scanRGB(prefs.fgCursor.value,&cv)?
+     createColor(colorSpace,cv):CGColorRetain(bgDefault));
+  }
+  BOOL chgfont=(prefs.fontName.key || prefs.fontSize.key
+   || prefs.fontProportional.key);
+  if(chgfont){
+    if(ctFont){
+      CFRelease(ctFont);
+      CFRelease(ctFontBold);
+      CFRelease(ctFontItalic);
+      CFRelease(ctFontBoldItalic);
+    }
+    NSString* fname=prefs.fontName.value;
+    NSNumber* fsize=prefs.fontSize.value;
+    ctFont=CTFontCreateWithName(([fname isKindOfClass:[NSString class]]
+     && fname.length)?(CFStringRef)fname:CFSTR("Courier"),
+     ([fsize isKindOfClass:[NSNumber class]]?fsize.doubleValue:0)?:10,NULL);
+  }
+  if(chgfont || prefs.fontWidthSample.key){
+    NSString* sample=prefs.fontWidthSample.value;
     NSUInteger sslength;
     CFDictionaryRef ssattr=CFDictionaryCreate(NULL,
      (const void**)&kCTFontAttributeName,(const void**)&ctFont,1,NULL,NULL);
@@ -142,13 +271,17 @@ static NSString* getTitle(VT100* terminal) {
      ([sample isKindOfClass:[NSString class]] && (sslength=sample.length))?
      (CFStringRef)sample:(sslength=1,CFSTR("$")),ssattr);
     CTLineRef ssline=CTLineCreateWithAttributedString(ssobj);
-    colWidth=CTLineGetTypographicBounds(ssline,NULL,NULL,NULL)/sslength;
+    CGFloat ascent,descent,leading;
+    colWidth=CTLineGetTypographicBounds(ssline,
+     &ascent,&descent,&leading)/sslength;
+    rowHeight=ascent+descent+leading;
     CFRelease(ssline);
     CFRelease(ssobj);
     CFRelease(ssattr);
-    NSNumber* proportional=[settings objectForKey:kPrefFontProportional];
-    if(![proportional isKindOfClass:[NSNumber class]]
-     || !proportional.boolValue){
+  }
+  if(chgfont){
+    NSNumber* isprop=prefs.fontProportional.value;
+    if(![isprop isKindOfClass:[NSNumber class]] || !isprop.boolValue){
       // turn off all optional ligatures
       const int values[]={kCommonLigaturesOffSelector,kRareLigaturesOffSelector,
        kLogosOffSelector,kRebusPicturesOffSelector,kDiphthongLigaturesOffSelector,
@@ -156,9 +289,9 @@ static NSString* getTitle(VT100* terminal) {
        kSymbolLigaturesOffSelector,kContextualLigaturesOffSelector,
        kHistoricalLigaturesOffSelector};
       const size_t nvalues=sizeof(values)/sizeof(int);
-      const int key=kLigaturesType;
-      CFNumberRef ligkey=CFNumberCreate(NULL,kCFNumberIntType,&key);
+      CFNumberRef ligkey=CFNumberCreate(NULL,kCFNumberIntType,(const int[]){kLigaturesType});
       CFMutableArrayRef ffsettings=CFArrayCreateMutable(NULL,nvalues,&kCFTypeArrayCallBacks);
+      unsigned int i;
       for (i=0;i<nvalues;i++){
         CFNumberRef ligvalue=CFNumberCreate(NULL,kCFNumberIntType,&values[i]);
         CFDictionaryRef ligsetting=CFDictionaryCreate(NULL,
@@ -186,10 +319,6 @@ static NSString* getTitle(VT100* terminal) {
         ctFont=font;
       }
     }
-    glyphAscent=CTFontGetAscent(ctFont);
-    glyphHeight=glyphAscent+CTFontGetDescent(ctFont);
-    glyphMidY=glyphAscent-CTFontGetXHeight(ctFont)/2;
-    rowHeight=glyphHeight+CTFontGetLeading(ctFont);
     CTFontSymbolicTraits traits=CTFontGetSymbolicTraits(ctFont)
      ^kCTFontBoldTrait^kCTFontItalicTrait;
     ctFontBold=CTFontCreateCopyWithSymbolicTraits(ctFont,0,NULL,
@@ -198,31 +327,26 @@ static NSString* getTitle(VT100* terminal) {
      traits,kCTFontItalicTrait)?:CFRetain(ctFont);
     ctFontBoldItalic=CTFontCreateCopyWithSymbolicTraits(ctFont,0,NULL,
      traits,kCTFontBoldTrait^kCTFontItalicTrait)?:CFRetain(ctFont);
-    // set up text decoration attributes
-    int ul1=kCTUnderlineStyleSingle,ul2=kCTUnderlineStyleDouble;
-    ctUnderlineStyleSingle=CFNumberCreate(NULL,kCFNumberIntType,&ul1);
-    ctUnderlineStyleDouble=CFNumberCreate(NULL,kCFNumberIntType,&ul2);
-    // set up bell sound
-    CFBundleRef bundle=CFBundleGetMainBundle();
-    CFURLRef soundURL=CFBundleCopyResourceURL(bundle,CFSTR("bell"),CFSTR("caf"),NULL);
-    if(soundURL){
-      bellSound=AudioServicesCreateSystemSoundID(soundURL,
-       &bellSoundID)==kAudioServicesNoError;
-      CFRelease(soundURL);
-    }
-    // set up display
-    screenSection=[[NSIndexSet alloc] initWithIndex:0];
-    allTerminals=[[NSMutableArray alloc] init];
   }
-  return self;
+  UITableView* tableView=(UITableView*)self.view;
+  tableView.backgroundColor=[UIColor colorWithCGColor:bgDefault];
+  tableView.indicatorStyle=darkBG?
+   UIScrollViewIndicatorStyleWhite:UIScrollViewIndicatorStyleBlack;
+  tableView.rowHeight=rowHeight;
+  if(URL){
+    if(chgbg){
+      [self resignFirstResponder];
+      [self becomeFirstResponder];
+    }
+    else {[self screenSizeDidChange];}
+  }
+  return YES;
 }
 -(BOOL)isRunning {
   for (VT100* terminal in allTerminals){
     if(terminal.isRunning){return YES;}
   }
   return NO;
-}
--(void)animationDidStop:(NSString*)animationID finished:(NSNumber*)finished context:(UITableView*)tableView {
 }
 -(void)screenSizeDidChange {
   UITableView* tableView=(UITableView*)self.view;
@@ -243,8 +367,9 @@ static NSString* getTitle(VT100* terminal) {
   }
   else {  
     CGRect frame=tableView.frame,endFrame=frame;
-    endFrame.origin.x=frame.size.width*(previousIndex==NSNotFound
-     || previousIndex<activeIndex?-1:1);
+    endFrame.origin.x=frame.size.width;
+    if(previousIndex==NSNotFound || previousIndex<activeIndex)
+      endFrame.origin.x*=-1;
     previousIndex=activeIndex;
     [UIView animateWithDuration:0.25
      animations:^{tableView.frame=endFrame;}
@@ -331,8 +456,7 @@ static NSString* getTitle(VT100* terminal) {
   else {
     cell=[[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
      reuseIdentifier:@"Cell"] autorelease];
-    cell.backgroundView=rowView=[[[MTRowView alloc] initWithBackgroundColor:bgDefault
-     ascent:glyphAscent height:glyphHeight midY:glyphMidY] autorelease];
+    cell.backgroundView=rowView=[[[MTRowView alloc] init] autorelease];
   }
   CFIndex length,cursorColumn;
   screen_char_t* ptr=[activeTerminal charactersAtLineIndex:ipath.row
@@ -445,7 +569,7 @@ static NSString* getTitle(VT100* terminal) {
       }
     }
     CFAttributedStringEndEditing(string);
-    [rowView renderString:string];
+    [rowView renderString:string withBGColor:bgDefault];
     CFRelease(string);
   }
   return cell;
@@ -563,7 +687,7 @@ static NSString* getTitle(VT100* terminal) {
   [activeTerminal sendString:(CFStringRef)[UIPasteboard generalPasteboard].string];
 }
 -(void)reflow:(UIMenuController*)menu {
-  NSMutableString* content=[NSMutableString string];
+  NSMutableString* text=[NSMutableString string];
   CFIndex count=activeTerminal.numberOfLines,i,blankspan=0;
   for (i=0;i<count;i++){
     CFIndex length,j;
@@ -571,7 +695,7 @@ static NSString* getTitle(VT100* terminal) {
      charactersAtLineIndex:i length:&length cursorColumn:NULL];
     while(length && !ptr[length-1].c){length--;}
     if(i && !ptr->wrapped){
-      [content appendString:@"\n"];
+      [text appendString:@"\n"];
       if(!length){blankspan++;}
     }
     if(length){
@@ -579,20 +703,17 @@ static NSString* getTitle(VT100* terminal) {
       unichar* ucbuf=malloc(length*sizeof(unichar));
       for (j=0;j<length;j++){ucbuf[j]=ptr[j].c?:0xA0;}
       CFStringRef ucstr=CFStringCreateWithCharactersNoCopy(NULL,ucbuf,length,kCFAllocatorMalloc);
-      [content appendString:(NSString*)ucstr];
+      [text appendString:(NSString*)ucstr];
       CFRelease(ucstr);// will automatically free(ucbuf)
     }
   }
   if(blankspan){
-    NSUInteger length=content.length;
-    [content deleteCharactersInRange:NSMakeRange(length-blankspan,blankspan)];
+    NSUInteger length=text.length;
+    [text deleteCharactersInRange:NSMakeRange(length-blankspan,blankspan)];
   }
-  CFStringRef fontName=CTFontCopyPostScriptName(ctFont);
   MTScratchpad* scratch=[[MTScratchpad alloc]
-   initWithTitle:getTitle(activeTerminal) content:content
-   font:[UIFont fontWithName:(NSString*)fontName size:CTFontGetSize(ctFont)]
-   textColor:[UIColor colorWithCGColor:fgDefault] refDelegate:(id)self];
-  CFRelease(fontName);
+   initWithText:text fontSize:CTFontGetSize(ctFont) darkBG:darkBG];
+  scratch.title=getTitle(activeTerminal);
   UINavigationController* nav=[[UINavigationController alloc]
    initWithRootViewController:scratch];
   [scratch release];
@@ -608,11 +729,7 @@ static NSString* getTitle(VT100* terminal) {
   UITableView* tableView=[[MTRespondingTableView alloc]
    initWithFrame:CGRectZero style:UITableViewStylePlain];
   tableView.allowsSelection=NO;
-  tableView.backgroundColor=[UIColor colorWithCGColor:bgDefault];
-  tableView.indicatorStyle=darkBG?
-   UIScrollViewIndicatorStyleWhite:UIScrollViewIndicatorStyleBlack;
   tableView.separatorStyle=UITableViewCellSeparatorStyleNone;
-  tableView.rowHeight=rowHeight;
   tableView.dataSource=self;
   // install gesture recognizers
   UILongPressGestureRecognizer* kbGesture=[[UILongPressGestureRecognizer alloc]
@@ -641,6 +758,7 @@ static NSString* getTitle(VT100* terminal) {
   [tableView addGestureRecognizer:holdGesture];
   [holdGesture release];
   [self.view=tableView release];
+  [self handleOpenURL:nil];
   // add custom menu items
   UIMenuItem* reflowitem=[[UIMenuItem alloc]
    initWithTitle:@"\u2630" action:@selector(reflow:)];
@@ -692,14 +810,9 @@ static NSString* getTitle(VT100* terminal) {
    atScrollPosition:UITableViewScrollPositionBottom animated:NO];
 }
 -(void)dealloc {
-  unsigned int i;
-  for (i=0;i<256;i++){CFRelease(colorTable[i]);}
+  CFRelease(colorBag);
+  CFRelease(colorSpace);
   CFRelease(nullColor);
-  CFRelease(bgDefault);
-  CFRelease(bgCursor);
-  CFRelease(fgDefault);
-  CFRelease(fgBold);
-  CFRelease(fgCursor);
   CFRelease(ctFont);
   CFRelease(ctFontBold);
   CFRelease(ctFontItalic);

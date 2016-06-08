@@ -3,19 +3,10 @@
 #import "MTKBAvoiding.h"
 #import "VT100.h"
 
-#define kPrefPalette @"palette"
-#define kPrefBGDefaultColor @"bgColor"
-#define kPrefFGDefaultColor @"fgColor"
-#define kPrefFGBoldColor @"fgBoldColor"
-#define kPrefBGCursorColor @"bgCursorColor"
-#define kPrefFGCursorColor @"fgCursorColor"
-#define kPrefFontName @"fontName"
-#define kPrefFontSize @"fontSize"
-#define kPrefFontWidthSample @"fontWidthSample"
-#define kPrefFontProportional @"fontProportional"
-
 @interface MTController : MTKBAvoiding <UIActionSheetDelegate,UIKeyInput,UITableViewDataSource,VT100Delegate> {
-  CGColorRef colorTable[256],nullColor;
+  CFMutableBagRef colorBag;
+  CGColorSpaceRef colorSpace;
+  CGColorRef nullColor,colorTable[256];
   CGColorRef bgDefault,fgDefault,fgBold;
   CGColorRef bgCursor,fgCursor;
   CTFontRef ctFont;
@@ -24,7 +15,6 @@
   CTFontRef ctFontBoldItalic;
   CFNumberRef ctUnderlineStyleSingle;
   CFNumberRef ctUnderlineStyleDouble;
-  CGFloat glyphAscent,glyphHeight,glyphMidY;
   CGFloat colWidth,rowHeight;
   SystemSoundID bellSoundID;
   BOOL bellSound;
@@ -36,6 +26,6 @@
   VT100* activeTerminal;
   NSUInteger activeIndex,previousIndex;
 }
--(id)initWithSettings:(NSDictionary*)settings;
+-(BOOL)handleOpenURL:(NSURL*)URL;
 -(BOOL)isRunning;
 @end
