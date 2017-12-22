@@ -33,10 +33,10 @@ If you want to read more about the exploit and the version of async_awake-fun th
 
 ## Credits
 
-I only added these two projects together in order to make a jailed terminal. All credits go to these people and projects:
+I only added these two projects together with some light modifications in order to make a jailed terminal. All credits go to these people and projects:
 
-- [stek29](https://twitter.com/stek29) for their [async_awake-fun fork](https://github.com/stek29/async_awake-fun))
-- [nullpixel](https://twitter.com/nullriver) for his [async_awake-fun fork](https://github.com/nullpixel/async_awake-fun))
+- [stek29](https://twitter.com/stek29) for their [async_awake-fun fork](https://github.com/stek29/async_awake-fun)
+- [nullpixel](https://twitter.com/nullriver) for his [async_awake-fun fork](https://github.com/nullpixel/async_awake-fun)
 - [ninjaprawn](https://twitter.com/theninjaprawn) for [async_awake-fun](https://github.com/ninjaprawn/async_awake-fun)
 - [Ian Beer](https://twitter.com/i41nbeer?lang=en) for creating [async_wake](https://bugs.chromium.org/p/project-zero/issues/detail?id=1417#c3) (the exploit)
 - [lordscotland](https://bitbucket.org/lordscotland/) for the [original MTerminal project](http://cydia.saurik.com/package/com.officialscheduler.mterminal/) for jailbroken devices
