@@ -33,7 +33,7 @@ static BOOL cacheColor(CFMutableBagRef bag,CGColorRef* var,CGColorRef color) {
 }
 static CGSize getScreenSize(UIScrollView* view) {
   CGSize size=view.bounds.size;
-  UIEdgeInsets inset=view.contentInset;
+  UIEdgeInsets inset=view.adjustedContentInset;
   size.height-=inset.top+inset.bottom;
   return size;
 }
@@ -414,6 +414,9 @@ static NSString* getTitle(VT100* terminal) {
 }
 -(BOOL)canBecomeFirstResponder {
   return YES;
+}
+-(UIStatusBarStyle)preferredStatusBarStyle {
+    return UIStatusBarStyleLightContent;
 }
 -(UIKeyboardAppearance)keyboardAppearance {
   return darkBG?UIKeyboardAppearanceDark:UIKeyboardAppearanceDefault;

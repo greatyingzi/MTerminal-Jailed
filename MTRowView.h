@@ -1,3 +1,4 @@
+#import <UIKit/UIKit.h>
 #import <CoreText/CoreText.h>
 
 #define kMTBackgroundColorAttributeName CFSTR("MTBackgroundColor")

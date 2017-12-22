@@ -1,3 +1,5 @@
+#import <UIKit/UIKit.h>
+
 @class VT100;
 
 typedef enum {

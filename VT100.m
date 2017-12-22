@@ -113,9 +113,11 @@ static void screen_line_release(CFAllocatorRef allocator,screen_line_t* line) {
      .ws_col=screenWidth,.ws_row=screenHeight});
     if(pid==-1){raiseException(@"forkpty");}
     else if(pid==0){
-      if(execve("/usr/bin/login",
-       (char*[]){"login","-fp",getlogin(),NULL},
-       (char*[]){"TERM=xterm",NULL})==-1)
+        if(execve("/bootstrap/bin/sh",
+        //if(execve("/bootstrap/usr/bin/login",
+      (char*[]){"-i",NULL},
+       //(char*[]){"login","-fp",getlogin(),NULL},
+          (char*[]){"TERM=xterm","SHELL=/bootstrap/bin/sh","PATH=/bootstrap/usr/local/bin:/bootstrap/usr/sbin:/bootstrap/usr/bin:/bootstrap/sbin:/bootstrap/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",NULL})==-1)
         raiseException(@"execve(login)");
     }
     else {

@@ -8,10 +8,14 @@
   UIScrollView* view=(UIScrollView*)self.view;
   UIEdgeInsets inset=view.contentInset;
   if(inset.bottom!=kbHeight){
-    inset.bottom=kbHeight;
+    inset.bottom=kbHeight - view.safeAreaInsets.bottom;
     view.contentInset=view.scrollIndicatorInsets=inset;
     [self screenSizeDidChange];
   }
+}
+-(void)viewSafeAreaInsetsDidChange {
+    [super viewSafeAreaInsetsDidChange];
+    [self adjustContentInset];
 }
 -(void)viewWillAppear:(BOOL)animated {
   [super viewWillAppear:animated];

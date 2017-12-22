@@ -1,3 +1,5 @@
+#import <UIKit/UIKit.h>
+
 @class MTController;
 
 @interface MTAppDelegate : NSObject <UIApplicationDelegate> {
