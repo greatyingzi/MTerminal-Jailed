@@ -17,7 +17,7 @@ This project takes two other works and combines them into a terminal for iOS 11.
 - Added tfp0 that runs on open
 - Changed around script locations to work for what we have right now (since everything is in /bootstrap)
 
-Read the [credits](#credits) to see who is responsible fo the rest of the work.
+Read the [credits](#credits) to see who is responsible for the rest of the work.
 
 ## What it can do
 
